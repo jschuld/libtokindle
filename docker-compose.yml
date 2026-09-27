@@ -1,0 +1,10 @@
+services:
+  libtokindle:
+    build: .
+    image: libtokindle
+    env_file: .env
+    ports:
+      - "8080:8000"
+    volumes:
+      - ./config:/config
+    restart: unless-stopped

@@ -119,9 +119,20 @@ and a file over 50 MB.
   option for some titles, or Adobe could change the ADEPT protocol. libgourou
   is maintained, so pin a known-good version and update deliberately.
 
-## 6. Open questions
+## 6. Decisions (answered)
 
-1. Where will it run: a home server or NAS (amd64), a Raspberry Pi (arm64), or a small VPS?
-2. Phone OS: iOS (Shortcut) or Android (PWA share target)? This decides which part of milestone 4 gets built first.
-3. SMTP sender: a Gmail account with an app password is simplest. Is there one to use?
-4. Is email-in wanted, or is the share sheet enough?
+- **Hosting**: Docker at home, reached from the iPhone over Tailscale. A Google
+  Cloud free-tier `e2-micro` VM is the documented alternative.
+- **Client**: an iPhone using a plain web page in Safari with just an upload
+  button. No Shortcut, share target or email-in.
+- **Email**: generic SMTP settings. Gmail with an app password is the documented default.
+- **Jobs**: kept in memory (last 50), because there's one user and no history needs to survive a restart.
+
+## 7. Status
+
+- [x] Pipeline (`app/pipeline.py`), mailer, and job store
+- [x] Web app: upload page, token auth, job status (`app/main.py`, `app/static/index.html`)
+- [x] Dockerfile (builds libgourou from source), docker-compose, `activate` command
+- [x] Tests with fake libgourou tools
+- [ ] First real run: build the image, activate, and send one Auckland Libraries loan (milestone 1)
+- [ ] Pin `LIBGOUROU_REF` to the commit that worked
