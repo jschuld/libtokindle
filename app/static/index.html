@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="To Kindle">
+<title>Library to Kindle</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --card: #fff; --text: #1d1d1b; --muted: #6b6a66;
+    --accent: #1f6f5c; --accent-text: #fff; --border: #e2e0da;
+    --ok: #1f7a3a; --err: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615; --card: #22221f; --text: #ecebe7; --muted: #a3a29c;
+      --accent: #3fae90; --accent-text: #0e1a16; --border: #34332f;
+      --ok: #5cc279; --err: #f08a80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  main { max-width: 440px; margin: 0 auto; padding: 32px 16px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; }
+  button, .upload {
+    display: block; width: 100%; padding: 16px; border: 0; border-radius: 12px;
+    background: var(--accent); color: var(--accent-text); font: inherit; font-weight: 600;
+    text-align: center; cursor: pointer;
+  }
+  button:disabled { opacity: .5; }
+  input[type=password] {
+    width: 100%; padding: 14px; margin: 8px 0 12px; font: inherit; color: var(--text);
+    background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  }
+  #file { display: none; }
+  #status { margin-top: 16px; min-height: 1.5em; }
+  .ok { color: var(--ok); } .err { color: var(--err); } .muted { color: var(--muted); font-size: 15px; }
+  ul { list-style: none; padding: 0; margin: 24px 0 0; }
+  li { padding: 10px 0; border-top: 1px solid var(--border); font-size: 15px; }
+  .link { background: none; color: var(--muted); padding: 8px; margin-top: 16px; font-weight: 400; font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Library → Kindle</h1>
+  <p class="sub">Upload the <b>.acsm</b> file from Libby. The book will be sent to your Kindle.</p>
+
+  <div class="card" id="login" hidden>
+    <label for="token">Access token</label>
+    <input type="password" id="token" autocomplete="current-password">
+    <button id="save">Continue</button>
+    <p id="login-status" class="err"></p>
+  </div>
+
+  <div class="card" id="app" hidden>
+    <label class="upload" for="file" id="pick">Upload .acsm file</label>
+    <input type="file" id="file" accept=".acsm,application/vnd.adobe.adept+xml">
+    <div id="status"></div>
+    <ul id="recent"></ul>
+  </div>
+
+  <button class="link" id="logout" hidden>Forget access token</button>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const LABELS = {
+  queued: "Queued…", fulfilling: "Downloading from the library…",
+  removing_drm: "Removing DRM…", sending: "Emailing to Kindle…",
+  done: "Sent! It should appear on your Kindle in a few minutes.", failed: "Failed",
+};
+
+function getToken() { try { return localStorage.getItem("token") || ""; } catch { return ""; } }
+function setToken(t) { try { t ? localStorage.setItem("token", t) : localStorage.removeItem("token"); } catch {} }
+
+async function api(path, options = {}) {
+  const res = await fetch(path, { ...options, headers: { Authorization: "Bearer " + getToken() } });
+  const body = await res.json().catch(() => ({}));
+  if (res.status === 401) { showLogin("Wrong access token."); throw new Error("unauthorised"); }
+  if (!res.ok) throw new Error(body.detail || res.statusText);
+  return body;
+}
+
+function showLogin(msg = "") {
+  $("login").hidden = false; $("app").hidden = true; $("logout").hidden = true;
+  $("login-status").textContent = msg;
+}
+
+async function showApp() {
+  const status = await api("/api/status");
+  $("login").hidden = true; $("app").hidden = false; $("logout").hidden = false;
+  if (status.problems.length) {
+    setStatus("err", "Server isn't set up yet: " + status.problems.join("; "));
+  }
+  renderRecent(status.recent);
+}
+
+function setStatus(cls, text) {
+  $("status").className = cls; $("status").textContent = text;
+}
+
+function renderRecent(jobs) {
+  const list = $("recent"); list.innerHTML = "";
+  for (const job of jobs.slice(0, 5)) {
+    const li = document.createElement("li");
+    const when = new Date(job.created * 1000).toLocaleString();
+    const state = job.status === "done" ? "✅" : job.status === "failed" ? "❌" : "⏳";
+    li.textContent = `${state} ${job.title || job.filename}`;
+    const meta = document.createElement("div");
+    meta.className = "muted";
+    meta.textContent = job.error ? `${when} · ${job.error}` : when;
+    li.appendChild(meta);
+    list.appendChild(li);
+  }
+}
+
+async function poll(id) {
+  for (;;) {
+    const job = await api("/api/jobs/" + id);
+    if (job.status === "failed") return setStatus("err", "❌ " + job.error);
+    const label = LABELS[job.status] || job.status;
+    if (job.status === "done") return setStatus("ok", "✅ " + (job.title ? `“${job.title}” sent. ` : "") + "It should appear on your Kindle in a few minutes.");
+    setStatus("", "⏳ " + label);
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+}
+
+$("file").addEventListener("change", async () => {
+  const file = $("file").files[0];
+  $("file").value = "";
+  if (!file) return;
+  $("pick").style.pointerEvents = "none"; $("pick").style.opacity = .5;
+  try {
+    setStatus("", "⏳ Uploading…");
+    const form = new FormData(); form.append("file", file);
+    const job = await api("/api/upload", { method: "POST", body: form });
+    await poll(job.id);
+  } catch (e) {
+    if (e.message !== "unauthorised") setStatus("err", "❌ " + e.message);
+  } finally {
+    $("pick").style.pointerEvents = ""; $("pick").style.opacity = "";
+    api("/api/status").then((s) => renderRecent(s.recent)).catch(() => {});
+  }
+});
+
+$("save").addEventListener("click", () => {
+  setToken($("token").value.trim());
+  showApp().catch(() => {});
+});
+$("token").addEventListener("keydown", (e) => { if (e.key === "Enter") $("save").click(); });
+$("logout").addEventListener("click", () => { setToken(""); showLogin(); });
+
+getToken() ? showApp().catch(() => {}) : showLogin();
+</script>
+</body>
+</html>
