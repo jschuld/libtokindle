@@ -62,6 +62,7 @@
     <label class="upload" for="file" id="pick">Upload .acsm file</label>
     <input type="file" id="file" accept=".acsm,application/vnd.adobe.adept+xml">
     <div id="status"></div>
+    <p id="drive" class="muted" hidden></p>
     <ul id="recent"></ul>
   </div>
 
@@ -98,6 +99,21 @@ async function showApp() {
     setStatus("err", "Server isn't set up yet: " + status.problems.join("; "));
   }
   renderRecent(status.recent);
+  renderDrive(status.drive);
+}
+
+function renderDrive(drive) {
+  const el = $("drive");
+  el.hidden = !drive.enabled;
+  if (!drive.enabled) return;
+  if (drive.last_error) {
+    el.className = "err";
+    el.textContent = "Google Drive folder: last check failed: " + drive.last_error;
+  } else {
+    el.className = "muted";
+    const when = drive.last_check ? new Date(drive.last_check * 1000).toLocaleTimeString() : "not yet";
+    el.textContent = "Also watching your Google Drive folder (last checked " + when + ").";
+  }
 }
 
 function setStatus(cls, text) {
@@ -110,7 +126,7 @@ function renderRecent(jobs) {
     const li = document.createElement("li");
     const when = new Date(job.created * 1000).toLocaleString();
     const state = job.status === "done" ? "✅" : job.status === "failed" ? "❌" : "⏳";
-    li.textContent = `${state} ${job.title || job.filename}`;
+    li.textContent = `${state} ${job.title || job.filename}` + (job.source === "drive" ? " (Drive)" : "");
     const meta = document.createElement("div");
     meta.className = "muted";
     meta.textContent = job.error ? `${when} · ${job.error}` : when;
@@ -144,7 +160,7 @@ $("file").addEventListener("change", async () => {
     if (e.message !== "unauthorised") setStatus("err", "❌ " + e.message);
   } finally {
     $("pick").style.pointerEvents = ""; $("pick").style.opacity = "";
-    api("/api/status").then((s) => renderRecent(s.recent)).catch(() => {});
+    api("/api/status").then((s) => { renderRecent(s.recent); renderDrive(s.drive); }).catch(() => {});
   }
 });
 

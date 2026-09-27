@@ -18,6 +18,13 @@ for the design.
    from **Downloads**.
 3. Within a few minutes the book appears on your Kindle.
 
+**Or through Google Drive:** in Libby's download, tap **Share → Save to Files**, choose
+your watched Google Drive folder, and save. Within about a minute the service picks it up
+and sends it. EPUB and PDF files you put in that folder are sent as they are.
+
+Either way, you get an email at your Gmail address saying whether it worked (✅) or
+failed (❌), with the reason.
+
 Each `.acsm` file can be used only once, and it expires after a while. If the upload
 fails with a download error, download the `.acsm` again from Libby.
 
@@ -69,6 +76,41 @@ Don't open the service to the internet. Instead:
 
 In Safari, **Share → Add to Home Screen** makes it behave like an app. Enter your
 `UPLOAD_TOKEN` the first time; Safari remembers it.
+
+## Optional: watch a Google Drive folder
+
+The service checks one Drive folder every minute and sends any **new** file in it:
+`.acsm` loans go through the DRM step, and EPUB, PDF, DOCX, TXT and similar files are
+sent as they are. Files already in the folder when you turn this on are skipped. Files
+are never changed or deleted, and each file is sent only once. Delete old files from the
+folder whenever you like.
+
+Drive access uses a Google Cloud *service account*: a robot account that can only
+see the one folder you share with it. It's free.
+
+1. **Create the service account** in the [Google Cloud console](https://console.cloud.google.com):
+   1. Create a project, or pick an existing one.
+   2. **APIs & Services → Library**: search for **Google Drive API** and click **Enable**.
+   3. **IAM & Admin → Service accounts → Create service account**. Any name works,
+      e.g. `libtokindle`. Skip the optional roles and access steps.
+   4. Open the new account → **Keys → Add key → Create new key → JSON**. A `.json` file downloads.
+   5. Save it on the server as `./config/google-service-account.json`, next to `./config/adept`.
+2. **Share the folder**: in Google Drive, create a folder (e.g. `Kindle`), click
+   **Share**, and add the service account's email address (it looks like
+   `libtokindle@<project>.iam.gserviceaccount.com`, shown in the console) as a **Viewer**.
+3. **Configure**: open the folder in a browser and copy the ID from the URL
+   (`https://drive.google.com/drive/folders/<ID>`). Put it in `.env`:
+   ```
+   DRIVE_FOLDER_ID=<ID>
+   ```
+4. Restart with `docker compose up -d`. The web page then shows "Also watching your
+   Google Drive folder" with the last check time, or the error if something is wrong.
+
+On the iPhone, the Google Drive app adds Drive to **Files**, so Libby downloads can
+be saved straight into the folder.
+
+The key file gives read access to everything shared with the service account, so keep
+it private and only share the one folder with it.
 
 ## Alternative: Google Cloud free tier
 

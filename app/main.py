@@ -2,6 +2,7 @@
 
 import hmac
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, UploadFile
@@ -10,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import pipeline
 from .config import Config
+from .drive import DriveWatcher
 from .jobs import JobStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -18,7 +20,18 @@ STATIC = Path(__file__).parent / "static"
 
 cfg = Config.from_env()
 store = JobStore()
-app = FastAPI(title="libtokindle", docs_url=None, redoc_url=None)
+watcher = DriveWatcher(cfg, store) if cfg.drive_enabled else None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    stop = watcher.start() if watcher and cfg.google_credentials.exists() else None
+    yield
+    if stop:
+        stop.set()
+
+
+app = FastAPI(title="libtokindle", docs_url=None, redoc_url=None, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -44,6 +57,7 @@ def status() -> dict:
     return {
         "kindle_email": cfg.kindle_email,
         "problems": cfg.problems(),
+        "drive": watcher.status() if watcher else {"enabled": False},
         "recent": [job.to_dict() for job in store.recent()],
     }
 

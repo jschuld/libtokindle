@@ -124,7 +124,7 @@ and a file over 50 MB.
 - **Hosting**: Docker at home, reached from the iPhone over Tailscale. A Google
   Cloud free-tier `e2-micro` VM is the documented alternative.
 - **Client**: an iPhone using a plain web page in Safari with just an upload
-  button. No Shortcut, share target or email-in.
+  button, plus a watched Google Drive folder. No Shortcut, share target or email-in.
 - **Email**: generic SMTP settings. Gmail with an app password is the documented default.
 - **libgourou**: use the prebuilt `bcliang/docker-libgourou` image as the base image (the home PC is an Intel i7, so amd64) instead of compiling from source.
 - **Jobs**: kept in memory (last 50), because there's one user and no history needs to survive a restart.
@@ -135,4 +135,6 @@ and a file over 50 MB.
 - [x] Web app: upload page, token auth, job status (`app/main.py`, `app/static/index.html`)
 - [x] Dockerfile built on `bcliang/docker-libgourou:0.8.9-ubuntu` (amd64), docker-compose, `activate` command
 - [x] Tests with fake libgourou tools
-- [ ] First real run: build the image, activate, and send one Auckland Libraries loan (milestone 1)
+- [x] Google Drive folder watcher (`app/drive.py`, service account with read-only access, polls every 60 s)
+- [x] Pass/fail email to the Gmail address after every job (`NOTIFY_EMAIL`, defaults to `SMTP_USER`)
+- [x] First real run: build the image, activate, and send one Auckland Libraries loan (milestone 1)

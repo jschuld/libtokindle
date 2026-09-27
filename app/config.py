@@ -13,6 +13,13 @@ def _bool(value: str | None, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _notify_email(value: str, smtp_user: str) -> str:
+    value = value.strip()
+    if value.lower() == "none":
+        return ""
+    return value or smtp_user
+
+
 @dataclass(frozen=True)
 class Config:
     upload_token: str
@@ -30,6 +37,15 @@ class Config:
     adept_remove: str
     tool_timeout: int
     max_attachment_bytes: int
+    notify_email: str
+    drive_folder_id: str
+    google_credentials: Path
+    drive_poll_seconds: int
+    drive_state_file: Path
+
+    @property
+    def drive_enabled(self) -> bool:
+        return bool(self.drive_folder_id)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -53,6 +69,12 @@ class Config:
             tool_timeout=int(env.get("TOOL_TIMEOUT", "180")),
             # Send to Kindle rejects emails over 50 MB; leave room for base64 overhead.
             max_attachment_bytes=int(env.get("MAX_ATTACHMENT_BYTES", str(36 * 1024 * 1024))),
+            # Where pass/fail notices go. Defaults to the Gmail account; "none" turns them off.
+            notify_email=_notify_email(env.get("NOTIFY_EMAIL", ""), smtp_user),
+            drive_folder_id=env.get("DRIVE_FOLDER_ID", "").strip(),
+            google_credentials=Path(env.get("GOOGLE_SERVICE_ACCOUNT_FILE", "/config/google-service-account.json")),
+            drive_poll_seconds=max(15, int(env.get("DRIVE_POLL_SECONDS", "60"))),
+            drive_state_file=Path(env.get("DRIVE_STATE_FILE", "/config/drive-state.json")),
         )
 
     def problems(self) -> list[str]:
@@ -68,4 +90,6 @@ class Config:
                 missing.append(f"{name} is not set")
         if not (self.adept_dir / "activation.xml").exists():
             missing.append(f"Adobe device not activated (no activation.xml in {self.adept_dir}); run `activate` first")
+        if self.drive_enabled and not self.google_credentials.exists():
+            missing.append(f"DRIVE_FOLDER_ID is set but the Google service account key {self.google_credentials} is missing")
         return missing

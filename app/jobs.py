@@ -14,6 +14,7 @@ MAX_JOBS = 50
 class Job:
     id: str
     filename: str
+    source: str = "upload"  # upload | drive
     status: str = "queued"  # queued | fulfilling | removing_drm | sending | done | failed
     title: str | None = None
     error: str | None = None
@@ -29,8 +30,8 @@ class JobStore:
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
 
-    def create(self, filename: str) -> Job:
-        job = Job(id=uuid.uuid4().hex[:12], filename=filename)
+    def create(self, filename: str, source: str = "upload") -> Job:
+        job = Job(id=uuid.uuid4().hex[:12], filename=filename, source=source)
         with self._lock:
             self._jobs[job.id] = job
             if len(self._jobs) > MAX_JOBS:

@@ -37,18 +37,43 @@ def validate_acsm(data: bytes) -> None:
         raise PipelineError("That doesn't look like an .acsm file (no fulfillment token).")
 
 
-def process(cfg: Config, store: JobStore, job: Job, acsm: bytes) -> None:
-    """Run one job start to finish, recording progress and errors on the job."""
+# Formats Send to Kindle accepts by email; these are sent as they are.
+SEND_AS_IS = {".epub", ".pdf", ".doc", ".docx", ".txt", ".rtf", ".htm", ".html", ".png", ".gif", ".jpg", ".jpeg", ".bmp"}
+
+
+def is_supported(filename: str) -> bool:
+    suffix = Path(filename).suffix.lower()
+    return suffix == ".acsm" or suffix in SEND_AS_IS
+
+
+def process(cfg: Config, store: JobStore, job: Job, data: bytes) -> None:
+    """Run one job start to finish, recording progress and errors on the job.
+
+    An .acsm loan is downloaded and its DRM removed; any other supported file is sent as it is.
+    """
     cfg.work_dir.mkdir(parents=True, exist_ok=True)
     workdir = Path(tempfile.mkdtemp(prefix=f"{job.id}-", dir=cfg.work_dir))
     try:
-        store.update(job, status="fulfilling")
-        encrypted = fulfil(cfg, workdir, acsm)
+        suffix = Path(job.filename).suffix.lower()
+        if suffix == ".acsm":
+            validate_acsm(data)
+            store.update(job, status="fulfilling")
+            encrypted = fulfil(cfg, workdir, data)
+            store.update(job, status="removing_drm")
+            book = remove_drm(cfg, workdir, encrypted)
+        elif suffix in SEND_AS_IS:
+            book = workdir / "out" / f"book{suffix}"
+            book.parent.mkdir()
+            book.write_bytes(data)
+            if suffix == ".epub" and is_drm_protected(book):
+                raise PipelineError("This EPUB has Adobe DRM. Upload the loan's .acsm file instead.")
+        else:
+            raise PipelineError(f"Can't send {suffix or 'files without an extension'} to a Kindle. Use an .acsm, EPUB or PDF.")
 
-        store.update(job, status="removing_drm")
-        book = remove_drm(cfg, workdir, encrypted)
         title, author = read_metadata(book)
-        book = book.rename(workdir / "out" / nice_filename(title, author, book.suffix))
+        if title is None and suffix != ".acsm":
+            title = Path(job.filename).stem
+        book = book.rename(book.parent / nice_filename(title, author, book.suffix))
         store.update(job, title=title)
 
         if book.stat().st_size > cfg.max_attachment_bytes:
@@ -69,6 +94,31 @@ def process(cfg: Config, store: JobStore, job: Job, acsm: bytes) -> None:
     finally:
         if not cfg.keep_files:
             shutil.rmtree(workdir, ignore_errors=True)
+    notify(cfg, job)
+
+
+def fail(cfg: Config, store: JobStore, job: Job, error: str) -> None:
+    """Mark a job failed before the pipeline could start, and tell the user."""
+    store.update(job, status="failed", error=error)
+    notify(cfg, job)
+
+
+def notify(cfg: Config, job: Job) -> None:
+    """Email the pass/fail result. A failed notice is logged, never raised."""
+    if not cfg.notify_email:
+        return
+    name = job.title or job.filename
+    via = "Google Drive" if job.source == "drive" else "the web page"
+    if job.status == "done":
+        subject = f"✅ Sent to Kindle: {name}"
+        body = f"“{name}” was sent to {cfg.kindle_email}. It should appear on your Kindle in a few minutes.\n\nFile: {job.filename} (from {via})"
+    else:
+        subject = f"❌ Not sent to Kindle: {name}"
+        body = f"“{job.filename}” (from {via}) could not be sent to your Kindle.\n\n{job.error}"
+    try:
+        mailer.send_notification(cfg, subject, body)
+    except Exception:
+        log.exception("couldn't send notification for job %s", job.id)
 
 
 def _run(cfg: Config, args: list[str], step: str) -> None:
