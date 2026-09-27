@@ -3,8 +3,9 @@
 Send Auckland Libraries (Libby) ebook loans to your Kindle from your phone's browser.
 
 Upload the loan's `.acsm` file on a small web page. The service downloads the book,
-removes the Adobe DRM with [libgourou](https://forge.soutade.fr/soutade/libgourou),
-and emails the EPUB to your Kindle's Send to Kindle address. See [PLAN.md](PLAN.md)
+removes the Adobe DRM with [libgourou](https://forge.soutade.fr/soutade/libgourou)
+(through the `bcliang/docker-libgourou` image), and emails the EPUB to your Kindle's
+Send to Kindle address. See [PLAN.md](PLAN.md)
 for the design.
 
 > Use this only for your own loans, and delete the book from your Kindle when the loan ends.
@@ -24,7 +25,9 @@ Books in BorrowBox can't be sent, because BorrowBox doesn't offer an `.acsm` fil
 
 ## Setup (Docker at home)
 
-You need a computer at home that stays on and runs Docker (a NAS, a mini PC or a Raspberry Pi 4/5).
+You need an always-on computer at home that runs Docker on a normal Intel/AMD (amd64) processor.
+The image is built on [`bcliang/docker-libgourou`](https://hub.docker.com/r/bcliang/docker-libgourou),
+which provides the libgourou tools and is published for amd64 only (not Raspberry Pi).
 
 ### 1. Amazon
 - Find your Send to Kindle address: amazon.com → *Manage Your Content and Devices* →

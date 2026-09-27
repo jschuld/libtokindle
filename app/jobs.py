@@ -1,5 +1,7 @@
 """In-memory job log. One user, one process: nothing here needs to survive a restart."""
 
+from __future__ import annotations
+
 import threading
 import time
 import uuid

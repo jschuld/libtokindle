@@ -13,9 +13,9 @@ case "$1" in
       exit 1
     fi
     if [ -n "$ADOBE_ID" ]; then
-      exec adept_activate -u "$ADOBE_ID" -p "$ADOBE_PASSWORD" -O "$ADEPT_DIR"
+      exec adept_activate --random-serial --username "$ADOBE_ID" --password "$ADOBE_PASSWORD" --output-dir "$ADEPT_DIR"
     else
-      exec adept_activate --anonymous -O "$ADEPT_DIR"
+      exec adept_activate --random-serial --anonymous --output-dir "$ADEPT_DIR"
     fi
     ;;
   *)

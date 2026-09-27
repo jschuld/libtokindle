@@ -58,15 +58,16 @@ def cfg(tmp_path, sent):
         f"""
         if os.environ.get("FAKE_FAIL") == "fulfil":
             print("Error : E_LIC_ALREADY_FULFILLED_BY_ANOTHER_USER", file=sys.stderr); sys.exit(1)
-        out = sys.argv[sys.argv.index("-O") + 1]
+        out = sys.argv[sys.argv.index("--output-dir") + 1]
+        assert sys.argv[-1].endswith(".acsm")
         shutil.copyfile({str(epub_src)!r}, os.path.join(out, "Te Korero.epub"))
         """,
     )
     remover = fake_tool(
         tmp_path / "adept_remove",
         """
-        src = sys.argv[sys.argv.index("-f") + 1]
-        dst = sys.argv[sys.argv.index("-o") + 1]
+        src = sys.argv[-1]
+        dst = os.path.join(sys.argv[sys.argv.index("--output-dir") + 1], sys.argv[sys.argv.index("--output-file") + 1])
         with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w") as zout:
             for item in zin.namelist():
                 if item != "META-INF/rights.xml":

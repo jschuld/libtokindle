@@ -1,5 +1,7 @@
 """The .acsm → DRM-free book → Kindle pipeline, built on libgourou's command-line tools."""
 
+from __future__ import annotations
+
 import logging
 import re
 import shutil
@@ -90,7 +92,11 @@ def fulfil(cfg: Config, workdir: Path, acsm: bytes) -> Path:
     fulfilled = workdir / "fulfilled"
     fulfilled.mkdir()
     try:
-        _run(cfg, [cfg.acsmdownloader, "-D", str(cfg.adept_dir), "-O", str(fulfilled), "-f", str(acsm_path)], "Downloading the book")
+        _run(
+            cfg,
+            [cfg.acsmdownloader, "--adept-directory", str(cfg.adept_dir), "--output-dir", str(fulfilled), str(acsm_path)],
+            "Downloading the book",
+        )
     except PipelineError as exc:
         raise PipelineError(
             f"{exc}. If you've already used this .acsm or it's more than a few days old, "
@@ -116,7 +122,11 @@ def remove_drm(cfg: Config, workdir: Path, encrypted: Path) -> Path:
     if not is_drm_protected(encrypted):
         shutil.copyfile(encrypted, output)
         return output
-    _run(cfg, [cfg.adept_remove, "-D", str(cfg.adept_dir), "-f", str(encrypted), "-o", str(output)], "Removing DRM")
+    _run(
+        cfg,
+        [cfg.adept_remove, "--adept-directory", str(cfg.adept_dir), "--output-dir", str(out_dir), "--output-file", output.name, str(encrypted)],
+        "Removing DRM",
+    )
     if not output.exists():
         raise PipelineError("Removing DRM produced no file.")
     return output

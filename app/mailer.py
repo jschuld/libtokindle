@@ -1,5 +1,7 @@
 """Deliver a book to the Kindle's Send to Kindle address."""
 
+from __future__ import annotations
+
 import smtplib
 import ssl
 from email.message import EmailMessage
