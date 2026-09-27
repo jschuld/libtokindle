@@ -67,7 +67,9 @@ def cfg(tmp_path, sent):
         tmp_path / "adept_remove",
         """
         src = sys.argv[-1]
-        dst = os.path.join(sys.argv[sys.argv.index("--output-dir") + 1], sys.argv[sys.argv.index("--output-file") + 1])
+        if {"-O", "--output-dir"} & set(sys.argv) and {"-o", "--output-file"} & set(sys.argv):
+            print("Error : you cannot use both -o and -O", file=sys.stderr); sys.exit(1)
+        dst = sys.argv[sys.argv.index("--output-file") + 1]
         with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w") as zout:
             for item in zin.namelist():
                 if item != "META-INF/rights.xml":

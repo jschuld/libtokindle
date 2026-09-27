@@ -124,7 +124,8 @@ def remove_drm(cfg: Config, workdir: Path, encrypted: Path) -> Path:
         return output
     _run(
         cfg,
-        [cfg.adept_remove, "--adept-directory", str(cfg.adept_dir), "--output-dir", str(out_dir), "--output-file", output.name, str(encrypted)],
+        # adept_remove refuses --output-dir together with --output-file, so give it the full path.
+        [cfg.adept_remove, "--adept-directory", str(cfg.adept_dir), "--output-file", str(output), str(encrypted)],
         "Removing DRM",
     )
     if not output.exists():
