@@ -35,42 +35,76 @@ class Response:
 
 
 class FakeLibby:
-    """Just enough of sentry-read.svc.overdrive.com (and a download host) to test against."""
+    """Just enough of Libby (sentry-read.svc.overdrive.com), OverDrive's library directory
+    and a download host to test against. Sessions ("chips") only see the card once it has
+    been signed in on them or cloned to them, like the real thing."""
 
     def __init__(self):
-        self.valid_code = "12345678"
+        self.card_number, self.pin = "21234000123456", "1234"
         self.cards = [CARD]
         self.loans = []
         self.holds = []
         self.calls = []
         self.tokens = 0
+        self.linked = set()  # tokens whose chip has the card
+        self.codes = {}
         self.expired = set()
         self.rate_limited = False
         self.borrow_error = None
         self.open_epub = b""
+        self.forms = [{"ilsName": "aucklandlibraries", "type": "Local"}]
 
-    def _token(self):
+    def _token(self, linked=False):
         self.tokens += 1
-        return f"token-{self.tokens}"
+        token = f"token-{self.tokens}"
+        if linked:
+            self.linked.add(token)
+        return token
 
     def request(self, method, url, headers=None, timeout=None, json=None, params=None, allow_redirects=True):
         path = url.replace(libby.API + "/", "")
-        auth = (headers or {}).get("Authorization", "")
-        self.calls.append((method, path, auth, json))
+        auth = (headers or {}).get("Authorization", "").removeprefix("Bearer ")
+        self.calls.append((method, path, auth, json, params))
         if url.startswith("https://download.example/"):
             return Response(content=self.open_epub)
+        if url.startswith(libby.LIBRARIES_API):
+            key = url.rsplit("/", 1)[1]
+            if key != "aucklandlibraries":
+                return Response(404, {"message": "not found"})
+            return Response(body={"websiteId": 42, "preferredKey": "aucklandlibraries", "name": "Auckland Libraries"})
         if self.rate_limited:
             return Response(403, {"result": "whoa"})
         if path == "chip" and method == "POST":
-            return Response(body={"identity": self._token(), "chip": "c1"})
-        if auth.removeprefix("Bearer ") in self.expired:
+            assert params["c"] == "d:22.1.1"
+            if auth:  # refreshing an existing chip keeps its card
+                assert params.get("v")
+                return Response(body={"identity": self._token(linked=auth in self.linked), "chip": params["v"]})
+            return Response(body={"identity": self._token(), "chip": f"chip{self.tokens}abcdef"})
+        if auth in self.expired:
             return Response(401, {"result": "unauthorized"})
-        if path == "chip/clone/code":
-            if json["code"] != self.valid_code:
+        if path == "auth/forms/42":
+            return Response(body={"forms": self.forms})
+        if path == "auth/link/42":
+            if (json["username"], json["password"]) != (self.card_number, self.pin):
+                return Response(401, {"result": "credentials_rejected"})
+            assert json["ils"] == "aucklandlibraries"
+            self.linked.add(auth)
+            return Response(body={"result": "linked"})
+        if path == "chip/clone/code" and method == "GET":
+            assert params == {"role": "primary"}
+            code = f"{len(self.codes) + 10000000}"
+            self.codes[code] = auth in self.linked
+            return Response(body={"code": code})
+        if path == "chip/clone/code" and method == "POST":
+            if json.get("role") != "secondary" or json["code"] not in self.codes:
                 return Response(400, {"result": "clone_code_invalid"})
+            if self.codes[json["code"]]:
+                self.linked.add(auth)
             return Response(body={"result": "cloned"})
         if path == "chip/sync":
-            return Response(body={"result": "synchronized", "cards": self.cards, "loans": self.loans, "holds": self.holds})
+            cards = self.cards if auth in self.linked else []
+            return Response(body={"result": "synchronized", "cards": cards, "loans": self.loans if cards else [],
+                                  "holds": self.holds if cards else []})
         if path.startswith("open/"):
             return Response(body={"urls": {"openbook": "x"}})
         if "/fulfill/" in path:
@@ -91,7 +125,7 @@ class FakeLibby:
         return Response(404, {"result": "not_found"})
 
     def paths(self, prefix=""):
-        return [p for _, p, _, _ in self.calls if p.startswith(prefix)]
+        return [c[1] for c in self.calls if c[1].startswith(prefix)]
 
 
 @pytest.fixture
@@ -108,7 +142,7 @@ def lcfg(cfg, tmp_path):
 @pytest.fixture
 def client(lcfg, fake):
     c = LibbyClient(lcfg.libby_file, http=fake)
-    c.connect(fake.valid_code)
+    c.connect(fake.card_number, fake.pin)
     fake.calls.clear()
     return c
 
@@ -120,44 +154,76 @@ def watcher(lcfg, client):
 
 # --- Connecting
 
-def test_connect_links_account_and_saves_identity(lcfg, fake):
-    data = LibbyClient(lcfg.libby_file, http=fake).connect("1234 5678")
+def test_connect_with_card_and_pin(lcfg, fake):
+    data = LibbyClient(lcfg.libby_file, http=fake).connect(" 2123 4000 123456 ", fake.pin)
     assert [c["cardId"] for c in data["cards"]] == ["111"]
-    # anonymous chip → clone with its token → chip again with that token → sync
-    assert [(m, p) for m, p, _, _ in fake.calls] == [
-        ("POST", "chip"), ("POST", "chip/clone/code"), ("POST", "chip"), ("GET", "chip/sync")]
-    assert fake.calls[0][2] == ""
-    assert fake.calls[1][2] == fake.calls[2][2] == "Bearer token-1"
+    steps = [(c[0], c[1].replace(libby.LIBRARIES_API, "libraries")) for c in fake.calls]
+    assert steps == [
+        ("GET", "libraries/aucklandlibraries"),
+        ("POST", "chip"),                   # primary session
+        ("GET", "auth/forms/42"),
+        ("POST", "auth/link/42"),           # sign in with the card
+        ("GET", "chip/clone/code"),         # sync code from the primary
+        ("POST", "chip"),                   # secondary session
+        ("POST", "chip/clone/code"),        # card copied to the secondary
+        ("POST", "chip"),                   # refresh the secondary's identity
+        ("GET", "chip/sync"),
+    ]
     saved = json.loads(lcfg.libby_file.read_text())
-    assert saved["identity"] == "token-2"
+    assert saved["identity"] == "token-3"
+    assert saved["chip"] == "chip2abcdef"
+    assert saved["library"] == {"key": "aucklandlibraries", "name": "Auckland Libraries", "websiteId": "42"}
+    assert fake.pin not in lcfg.libby_file.read_text()  # the PIN is never stored
     assert stat.S_IMODE(lcfg.libby_file.stat().st_mode) == 0o600
 
 
-@pytest.mark.parametrize("code", ["", "1234", "abcdefgh"])
-def test_connect_rejects_malformed_code(lcfg, fake, code):
-    with pytest.raises(LibbyError, match="8 digits"):
-        LibbyClient(lcfg.libby_file, http=fake).connect(code)
-    assert fake.calls == []
-
-
-def test_connect_wrong_code(lcfg, fake):
-    with pytest.raises(LibbyError, match="didn't accept that setup code"):
-        LibbyClient(lcfg.libby_file, http=fake).connect("87654321")
+def test_connect_wrong_pin(lcfg, fake):
+    with pytest.raises(LibbyError, match="didn't accept that card number and PIN"):
+        LibbyClient(lcfg.libby_file, http=fake).connect(fake.card_number, "0000")
     assert not lcfg.libby_file.exists()
 
 
-def test_connect_account_without_cards(lcfg, fake):
+def test_connect_unknown_library(lcfg, fake):
+    with pytest.raises(LibbyError, match="doesn't know a library called “nowhere”"):
+        LibbyClient(lcfg.libby_file, http=fake).connect(fake.card_number, fake.pin, "nowhere")
+
+
+def test_library_key_can_be_a_libby_link(lcfg, fake):
+    client = LibbyClient(lcfg.libby_file, http=fake)
+    assert client.find_library("https://libbyapp.com/library/aucklandlibraries")["websiteId"] == "42"
+    with pytest.raises(LibbyError, match="libbyapp.com/library/"):
+        client.find_library("Auckland Libraries")
+
+
+def test_connect_requires_card_number(lcfg, fake):
+    with pytest.raises(LibbyError, match="card number"):
+        LibbyClient(lcfg.libby_file, http=fake).connect("  ", fake.pin)
+    assert fake.calls == []
+
+
+def test_connect_picks_the_library_sign_in_form(lcfg, fake):
+    fake.forms = [{"ilsName": "partnerlib"}, {"ilsName": "aucklandlibraries"}]
+    LibbyClient(lcfg.libby_file, http=fake).connect(fake.card_number, fake.pin)
+    link = next(c for c in fake.calls if c[1] == "auth/link/42")
+    assert link[3]["ils"] == "aucklandlibraries"
+
+
+def test_connect_session_without_card(lcfg, fake, monkeypatch):
     fake.cards = []
-    with pytest.raises(LibbyError, match="no library cards"):
-        LibbyClient(lcfg.libby_file, http=fake).connect(fake.valid_code)
+    with pytest.raises(LibbyError, match="shows no Auckland Libraries card"):
+        LibbyClient(lcfg.libby_file, http=fake).connect(fake.card_number, fake.pin)
     assert not lcfg.libby_file.exists()
 
 
 def test_expired_token_is_refreshed_once(client, fake, lcfg):
-    fake.expired.add("token-2")
+    fake.expired.add("token-3")
     client.sync()
     assert fake.paths() == ["chip/sync", "chip", "chip/sync"]
-    assert json.loads(lcfg.libby_file.read_text())["identity"] == "token-3"
+    refresh = fake.calls[1]
+    assert refresh[2] == "token-3" and refresh[4]["v"] == "chip2abc"  # the saved chip's id
+    saved = json.loads(lcfg.libby_file.read_text())
+    assert saved["identity"] == "token-4"
+    assert saved["library"]["name"] == "Auckland Libraries"  # refreshing keeps the rest
 
 
 def test_rate_limit_is_recognised(client, fake):
@@ -215,7 +281,7 @@ def test_ready_hold_is_borrowed_and_sent(watcher, fake, sent):
     ]
     watcher.poll_once()
 
-    borrows = [(p, body) for m, p, _, body in fake.calls if m == "POST" and p.startswith("card/")]
+    borrows = [(c[1], c[3]) for c in fake.calls if c[0] == "POST" and c[1].startswith("card/")]
     assert borrows == [("card/111/loan/4", {"period": 14, "units": "days", "lucky_day": None, "title_format": "ebook"})]
     assert len(sent) == 1
     assert watcher.store.recent()[0].filename == "Ready Hold.acsm"
@@ -234,7 +300,7 @@ def test_auto_borrow_off(watcher, fake, sent):
     watcher.poll_once()
     fake.holds = [ebook("4", "Ready Hold", isAvailable=True, placedDate="p1")]
     watcher.poll_once()
-    assert not [p for m, p, _, _ in fake.calls if m == "POST" and p.startswith("card/")]
+    assert not [c for c in fake.calls if c[0] == "POST" and c[1].startswith("card/")]
     assert sent == []
 
 
@@ -244,7 +310,7 @@ def test_borrow_failure_notified_once_and_retried(watcher, fake, notices):
     fake.borrow_error = "checkout_limit_reached"
     watcher.poll_once()
     watcher.poll_once()
-    borrows = [p for m, p, _, _ in fake.calls if m == "POST" and p.startswith("card/")]
+    borrows = [c for c in fake.calls if c[0] == "POST" and c[1].startswith("card/")]
     assert len(borrows) == 2  # retried each check
     assert len(notices) == 1  # but only one email
     assert "loan limit" in notices[0][1]
@@ -316,13 +382,16 @@ def api(fake, tmp_path, monkeypatch):
 AUTH = {"Authorization": "Bearer a-long-token-123"}
 
 
-def test_api_connect_send_disconnect(api, fake, tmp_path, monkeypatch):
+def test_api_connect_send_disconnect(api, fake, tmp_path, monkeypatch, caplog):
     assert api.get("/api/status", headers=AUTH).json()["libby"] == {"connected": False}
-    assert api.post("/api/libby/connect", headers=AUTH, json={"code": "000"}).status_code == 400
+    bad = api.post("/api/libby/connect", headers=AUTH, json={"card_number": fake.card_number, "pin": "0000"})
+    assert bad.status_code == 400 and "PIN" in bad.json()["detail"]
 
-    res = api.post("/api/libby/connect", headers=AUTH, json={"code": fake.valid_code})
+    res = api.post("/api/libby/connect", headers=AUTH, json={"card_number": fake.card_number, "pin": fake.pin})
     assert res.status_code == 200, res.text
     assert res.json()["libby"]["connected"] is True
+    assert res.json()["libby"]["libraries"] == ["Auckland Libraries"]
+    assert fake.pin not in caplog.text and "0000" not in caplog.text  # PINs are never logged
     assert main.libby_watcher is not None
 
     fake.loans = [ebook("1", "Old Book", checkoutDate="old")]

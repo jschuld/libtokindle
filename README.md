@@ -105,13 +105,20 @@ Libby loans** on the main page and tap **Send to Kindle**. Audiobooks and magazi
 ignored. A few titles can only be read in the Libby app or a browser; you get a ❌ email
 for those.
 
-To connect:
-1. In the Libby app, open the menu and choose **Copy To Another Device**. Libby shows an
-   8-digit setup code, valid for a few minutes.
-2. On the **Settings** page, under **Libby**, type the code and tap **Connect Libby**.
+To connect, go to the **Settings** page, find **Libby**, and enter:
+- **Library**: already filled in as `aucklandlibraries`. It's the word after
+  `libbyapp.com/library/` when you open your library in a browser. If connecting says
+  Libby doesn't know the library, check that word there.
+- Your **library card number** and **PIN**, the same ones you use on the library's website.
 
-The server is then linked like another device on your Libby account. No library card
-number or PIN is stored; the link lives in `./config/libby.json`. **Disconnect** removes it.
+Then tap **Connect Libby**. The server signs in once and keeps only Libby's session in
+`./config/libby.json`. The PIN is used for that sign-in only; it is never saved or
+logged. Loans and holds belong to your card, so the server sees the same ones as the Libby
+app on your phone. Your reading position and tags stay on the phone. **Disconnect**
+removes the session.
+
+(Libby's "Copy To Another Device" setup code isn't used: the current Libby app expects
+the *new* device to show a code, which a server can't do.)
 
 Libby has no official API. This uses the same one the Libby app uses, so it could stop
 working if OverDrive changes it, and Libby limits how often it can be asked (checks are

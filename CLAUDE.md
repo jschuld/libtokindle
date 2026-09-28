@@ -41,7 +41,7 @@ app/
                 the result email and never raises
   drive.py      DriveWatcher: polls one folder with a service account (drive.readonly)
                 through the Drive v3 REST API and google-auth AuthorizedSession
-  libby.py      LibbyClient (unofficial Libby API: link by setup code, sync, borrow,
+  libby.py      LibbyClient (unofficial Libby API: sign in with card + PIN, sync, borrow,
                 open + fulfill a loan) and LibbyWatcher (polls, auto-borrows ready ebook
                 holds, sends new ebook loans through pipeline.process, rate-limit backoff)
   jobs.py       JobStore: book history, persisted to /config/history.json, trimmed by retention
@@ -89,10 +89,21 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
 
 - There's no official API. Base URL `https://sentry-read.svc.overdrive.com`, JSON, with the
   header `Authorization: Bearer <identity>`.
-  - Link: `POST chip?client=dewey` (anonymous) → `POST chip/clone/code {"code": "12345678"}`
-    with that token → `POST chip?client=dewey` again with the token (so the identity
-    carries the cards) → save it. A 401 later is handled by re-POSTing `chip` with the
-    old token.
+  - **Linking uses the library card number + PIN** (the user's choice; this is how
+    libby-archiver does it). The Libby "Copy To Another Device" setup-code flow does NOT
+    work: the current Libby app makes the *new* device display a code for the phone to
+    enter, so the old "phone shows a code" flow (odmpy's) is gone. The first version was
+    built that way and failed for the user.
+  - Sign-in steps: `GET https://thunder.api.overdrive.com/v2/libraries/{key}` → `websiteId`
+    (key default `aucklandlibraries`, not yet confirmed against the real API) →
+    `POST chip?c=d:22.1.1&s=0` (anonymous, the primary) →
+    `GET auth/forms/{websiteId}` → pick `ilsName` (the one equal to the key, else the
+    first) → `POST auth/link/{websiteId} {"ils", "username": card, "password": pin}`
+    (`credentials_rejected` means a wrong card or PIN) → `GET chip/clone/code?role=primary`
+    → `code` → new anonymous chip (the secondary) → `POST chip/clone/code {"code",
+    "role": "secondary"}` → re-mint `POST chip?c=…&s=0&v=<secondary chip[:8]>` with the
+    secondary's token → save `{identity, chip, library, linked}` (never the PIN).
+  - A 401 or `missing_chip` later → re-mint with the saved identity and chip id, then retry once.
   - `GET chip/sync` returns `cards`, `loans` and `holds`. A ready hold has `isAvailable: true`.
     Type is in `type.id` (`ebook`, `audiobook`, `magazine`), formats in `formats[].id`.
   - Borrow: `POST card/{cardId}/loan/{titleId}` with
@@ -165,7 +176,7 @@ UPLOAD_TOKEN=dev uvicorn app.main:app --reload
 
 - Error messages shown to the user (web page, result email) say what to do next.
   `PipelineError`, `SettingsError` and `DriveError` carry those messages.
-- Secrets (`SMTP_PASSWORD`, `UPLOAD_TOKEN`) are never returned by the API or logged.
+- Secrets (`SMTP_PASSWORD`, `UPLOAD_TOKEN`, the Libby PIN) are never returned by the API or logged. The Libby PIN is not stored at all.
   Settings changes log only the key names.
 - After each change: run the tests, update README.md (user-facing) and PLAN.md
   (status/decisions) when behaviour changes, commit with a descriptive message, and push.

@@ -1,10 +1,11 @@
 """Libby / OverDrive integration: borrow holds as soon as they're ready, and send new
 ebook loans to the Kindle.
 
-Libby has no public API. This talks to the same endpoints the Libby web app uses
-(sentry-read.svc.overdrive.com), the way odmpy and the Libby calibre plugin do.
-The service links to the account as another "device" with a Libby setup code
-(Libby → Menu → Copy To Another Device); no library card PIN is stored.
+Libby has no public API. This talks to the same endpoints the Libby app uses
+(sentry-read.svc.overdrive.com). It signs in once with the library card number and
+PIN, the way libby-archiver does, and keeps only Libby's session token; the PIN is
+not stored. Loans and holds belong to the card, so this sees the same ones as the
+Libby app on the phone.
 
 For each new ebook loan it asks Libby for the Adobe EPUB (.acsm) or, when the
 publisher offers one, a DRM-free EPUB, and hands it to the normal pipeline.
@@ -28,6 +29,10 @@ from .jobs import JobStore
 log = logging.getLogger(__name__)
 
 API = "https://sentry-read.svc.overdrive.com"
+LIBRARIES_API = "https://thunder.api.overdrive.com/v2/libraries"
+DEFAULT_LIBRARY = "aucklandlibraries"
+# Libby's client id and version, sent when creating a session ("chip").
+CHIP_PARAMS = {"c": "d:22.1.1", "s": "0"}
 HEADERS = {
     "Accept": "application/json",
     "Cache-Control": "no-cache",
@@ -104,14 +109,28 @@ class LibbyClient:
             http = requests.Session()
         self.http = http
 
-    def _identity(self) -> str:
+    # --- The saved session: {"identity", "chip", "library": {...}, "linked"}
+
+    def session(self) -> dict:
         try:
-            return json.loads(self.path.read_text())["identity"]
-        except (OSError, ValueError, KeyError):
+            return json.loads(self.path.read_text())
+        except (OSError, ValueError):
             raise LibbyError("Libby isn't connected. Connect it on the Settings page.") from None
 
-    def _save_identity(self, identity: str) -> None:
-        _write_private(self.path, {"identity": identity, "linked": time.time()})
+    def _identity(self) -> str:
+        try:
+            return self.session()["identity"]
+        except KeyError:
+            raise LibbyError("Libby isn't connected. Connect it on the Settings page.") from None
+
+    def _save_session(self, **changes) -> None:
+        try:
+            data = self.session()
+        except LibbyError:
+            data = {}
+        _write_private(self.path, {**data, **changes})
+
+    # --- HTTP
 
     def _request(self, method: str, endpoint: str, *, token: str | None = None, anonymous: bool = False,
                  retry: bool = True, raw: bool = False, **kwargs) -> Any:
@@ -120,45 +139,100 @@ class LibbyClient:
             headers["Accept"] = "*/*"
         if not anonymous:
             headers["Authorization"] = f"Bearer {token or self._identity()}"
-        res = self.http.request(method, f"{API}/{endpoint}", headers=headers, timeout=60, **kwargs)
+        url = endpoint if endpoint.startswith("https://") else f"{API}/{endpoint}"
+        res = self.http.request(method, url, headers=headers, timeout=60, **kwargs)
         status = res.status_code
-        if status == 401 and not anonymous and token is None and retry:
+        result = _result(res) if status >= 400 else ""
+        if (status == 401 or result == "missing_chip") and not anonymous and token is None and retry:
             self._refresh()
             return self._request(method, endpoint, retry=False, raw=raw, **kwargs)
         if status == 429 or (status == 403 and "whoa" in (res.text or "")):
             raise LibbyRateLimited("Libby is limiting requests for now. The service will try again later.")
         if status >= 400:
-            raise LibbyError(f"Libby said {status} for {endpoint.split('/')[0]}: {_detail(res)}")
+            where = endpoint.rsplit("/", 1)[-1] if endpoint.startswith("https://") else endpoint.split("/")[0]
+            raise LibbyError(f"Libby said {status} for {where}: {_detail(res)}")
         return res
 
-    def _refresh(self) -> None:
-        """Libby's session tokens expire; a signed-in chip can mint a fresh one."""
-        res = self._request("POST", "chip", token=self._identity(), params={"client": "dewey"})
-        self._save_identity(res.json()["identity"])
+    def _mint(self, token: str | None = None, chip_id: str | None = None) -> dict:
+        """Create a Libby session ("chip"), or refresh one when given its token and id."""
+        params = dict(CHIP_PARAMS)
+        if chip_id:
+            params["v"] = chip_id[:8]
+        if token:
+            return self._request("POST", "chip", token=token, params=params).json()
+        return self._request("POST", "chip", anonymous=True, params=params).json()
 
-    def connect(self, code: str) -> dict:
-        """Link to a Libby account with an 8-digit setup code. Returns the first sync."""
-        code = re.sub(r"\D", "", code or "")
-        if len(code) != 8:
-            raise LibbyError("The setup code is 8 digits. In Libby, open the menu and choose Copy To Another Device.")
-        chip = self._request("POST", "chip", anonymous=True, params={"client": "dewey"}).json()
-        token = chip["identity"]
+    def _refresh(self) -> None:
+        """Libby's session tokens expire; the saved chip can mint a fresh one."""
+        saved = self.session()
+        chip = self._mint(token=saved["identity"], chip_id=saved.get("chip"))
+        self._save_session(identity=chip["identity"])
+
+    # --- Connecting
+
+    def find_library(self, key: str) -> dict:
+        """Look up a library by its Libby key (libbyapp.com/library/<key>)."""
+        key = (key or DEFAULT_LIBRARY).strip().lower()
+        match = re.search(r"libbyapp\.com/library/([a-z0-9-]+)", key)
+        key = match.group(1) if match else key
+        if not re.fullmatch(r"[a-z0-9-]+", key):
+            raise LibbyError("That doesn't look like a Libby library name. It's the word after libbyapp.com/library/.")
+        res = self.http.request("GET", f"{LIBRARIES_API}/{key}", headers=HEADERS, timeout=30)
+        if res.status_code == 404:
+            raise LibbyError(f"Libby doesn't know a library called “{key}”. It's the word after libbyapp.com/library/ "
+                             "when you open your library in a browser.")
+        if res.status_code >= 400:
+            raise LibbyError(f"Looking up the library failed ({res.status_code}): {_detail(res)}")
+        body = res.json()
+        return {"key": body.get("preferredKey") or key, "name": body.get("name") or key, "websiteId": str(body["websiteId"])}
+
+    def _ils(self, token: str, library: dict) -> str:
+        """Which sign-in form the library uses. Most libraries have exactly one."""
+        forms = self._request("GET", f"auth/forms/{library['websiteId']}", token=token).json().get("forms") or []
+        names = [f.get("ilsName") for f in forms if f.get("ilsName")]
+        if not names:
+            raise LibbyError(f"{library['name']} doesn't offer a card sign-in that this service understands.")
+        for name in names:
+            if name == library["key"]:
+                return name
+        if len(names) > 1:
+            log.info("Library has several sign-in forms (%s); using the first", ", ".join(names))
+        return names[0]
+
+    def connect(self, card_number: str, pin: str, library_key: str = DEFAULT_LIBRARY) -> dict:
+        """Sign in with a library card and keep only Libby's session token. Returns the first sync."""
+        card_number = re.sub(r"\s", "", card_number or "")
+        if not card_number:
+            raise LibbyError("Enter your library card number.")
+        library = self.find_library(library_key)
+
+        primary = self._mint()
         try:
-            self._request("POST", "chip/clone/code", token=token, json={"code": code})
+            self._request("POST", f"auth/link/{library['websiteId']}", token=primary["identity"],
+                          json={"ils": self._ils(primary["identity"], library), "username": card_number, "password": pin or ""})
         except LibbyRateLimited:
             raise
         except LibbyError as exc:
-            raise LibbyError(
-                f"Libby didn't accept that setup code. Codes only last a few minutes, so get a new one and try again. ({exc})"
-            ) from None
-        # Mint the identity again so it carries the linked library cards.
-        chip = self._request("POST", "chip", token=token, params={"client": "dewey"}).json()
-        self._save_identity(chip["identity"])
+            if "credentials_rejected" in str(exc) or " 401 " in str(exc):
+                raise LibbyError(f"{library['name']} didn't accept that card number and PIN. "
+                                 "Check them by signing in on the library's website.") from None
+            raise
+        # Like the Libby app: move the signed-in card to a second chip with a sync code,
+        # then refresh that chip's identity so it carries the card.
+        code = self._request("GET", "chip/clone/code", token=primary["identity"], params={"role": "primary"}).json()["code"]
+        secondary = self._mint()
+        self._request("POST", "chip/clone/code", token=secondary["identity"], json={"code": code, "role": "secondary"})
+        chip = self._mint(token=secondary["identity"], chip_id=secondary["chip"])
+
+        self.path.unlink(missing_ok=True)
+        self._save_session(identity=chip["identity"], chip=secondary["chip"], library=library, linked=time.time())
         data = self.sync()
         if not data.get("cards"):
             self.path.unlink(missing_ok=True)
-            raise LibbyError("Linked, but that Libby account has no library cards. Add your Auckland Libraries card in Libby first.")
+            raise LibbyError(f"Signed in, but Libby shows no {library['name']} card on the account. Please try again.")
         return data
+
+    # --- Using the account
 
     def sync(self) -> dict:
         return self._request("GET", "chip/sync").json()
@@ -184,6 +258,13 @@ class LibbyClient:
         type_id = (hold.get("type") or {}).get("id", "ebook")
         payload = {"period": lending_days(card, type_id), "units": "days", "lucky_day": None, "title_format": type_id}
         return self._request("POST", f"card/{hold['cardId']}/loan/{hold['id']}", json=payload).json()
+
+
+def _result(res: Any) -> str:
+    try:
+        return str((res.json() or {}).get("result") or "")
+    except Exception:
+        return ""
 
 
 def _detail(res: Any) -> str:
@@ -338,9 +419,15 @@ class LibbyWatcher:
 
     def status(self) -> dict:
         cards = (self.last_sync or {}).get("cards", [])
+        libraries = sorted({library_name(c) for c in cards})
+        if not libraries:
+            try:
+                libraries = [self.client.session()["library"]["name"]]
+            except (LibbyError, KeyError, TypeError):
+                pass
         return {
             "connected": True,
-            "libraries": sorted({library_name(c) for c in cards}),
+            "libraries": libraries,
             "auto_borrow": self.cfg.libby_auto_borrow,
             "last_check": self.last_check,
             "last_error": self.last_error,

@@ -247,9 +247,11 @@ def _libby() -> LibbyWatcher:
 
 
 @app.post("/api/libby/connect", dependencies=[Depends(require_token)])
-def libby_connect(code: str = Body(embed=True)) -> dict:
+def libby_connect(card_number: str = Body(embed=True), pin: str = Body("", embed=True),
+                  library: str = Body("aucklandlibraries", embed=True)) -> dict:
+    # The PIN is only used for this sign-in; it is never saved or logged.
     try:
-        LibbyClient(cfg.libby_file).connect(code)
+        LibbyClient(cfg.libby_file).connect(card_number, pin, library)
     except LibbyError as exc:
         log.warning("Connecting Libby failed: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from None

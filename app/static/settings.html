@@ -88,11 +88,15 @@
 
     <section class="card">
       <h2>Libby <span class="hint">(optional)</span></h2>
-      <p class="muted">Watches your Libby account. Ready holds are borrowed, and new ebook loans are sent to your Kindle. Loans you already have when you connect are skipped; send them from the main page if you want them.</p>
+      <p class="muted">Watches your Libby account. Ready holds are borrowed, and new ebook loans are sent to your Kindle. Loans you already have when you connect are skipped; send them from the main page if you want them. It signs in with your library card, so it sees the same loans and holds as the Libby app.</p>
       <p id="libby-state"></p>
       <div id="libby-connect" hidden>
-        <label for="libby-code">Setup code <span class="hint">in Libby: Menu → Copy To Another Device</span></label>
-        <input type="text" id="libby-code" inputmode="numeric" autocomplete="one-time-code" placeholder="12345678" maxlength="9">
+        <label for="libby-library">Library <span class="hint">the word after libbyapp.com/library/</span></label>
+        <input type="text" id="libby-library" value="aucklandlibraries" autocomplete="off" autocapitalize="none">
+        <label for="libby-card">Library card number</label>
+        <input type="text" id="libby-card" inputmode="numeric" autocomplete="off">
+        <label for="libby-pin">PIN <span class="hint">used once to sign in, never stored</span></label>
+        <input type="password" id="libby-pin" autocomplete="off">
         <button class="secondary" id="libby-connect-btn">Connect Libby</button>
       </div>
       <div id="libby-connected" hidden>
@@ -274,8 +278,10 @@ $("activate").addEventListener("click", withStatus($("activate-status"), async (
 $("libby-connect-btn").addEventListener("click", withStatus($("libby-status"), async () => {
   $("libby-connect-btn").disabled = true;
   try {
-    const res = await api("/api/libby/connect", { method: "POST", json: { code: $("libby-code").value } });
-    $("libby-code").value = "";
+    const res = await api("/api/libby/connect", { method: "POST", json: {
+      library: $("libby-library").value, card_number: $("libby-card").value, pin: $("libby-pin").value,
+    } });
+    $("libby-pin").value = "";
     renderLibby(res.libby);
   } finally {
     $("libby-connect-btn").disabled = false;
@@ -290,7 +296,7 @@ $("libby-check").addEventListener("click", withStatus($("libby-status"), async (
 }));
 
 $("libby-disconnect").addEventListener("click", async () => {
-  if (!confirm("Disconnect Libby? You can connect again later with a new setup code.")) return;
+  if (!confirm("Disconnect Libby? You can connect again later with your card number and PIN.")) return;
   try { renderLibby((await api("/api/libby/disconnect", { method: "POST" })).libby); } catch {}
 });
 
