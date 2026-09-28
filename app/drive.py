@@ -1,8 +1,9 @@
 """Watch a Google Drive folder and send every new file in it to the Kindle.
 
 Uses a Google Cloud service account with read-only access to the one folder you
-share with it. Files already processed are remembered by ID in a small JSON state
-file, so nothing is sent twice and nothing in the folder is changed.
+share with it. A small JSON state file records when watching started (files created
+before then are skipped) and the IDs of files already handled, so nothing is sent
+twice and nothing in the folder is changed.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import json
 import logging
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from . import pipeline
@@ -25,6 +27,15 @@ SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 # When settings change, a new watcher starts while the old one may still be mid-check;
 # this keeps them from both handling the same new file.
 _poll_lock = threading.Lock()
+
+
+class DriveError(Exception):
+    """A Drive problem with a message meant for the person using the web page."""
+
+
+def _now_rfc3339() -> str:
+    """The current time in the format Drive uses for createdTime, e.g. 2026-09-28T07:01:02.123Z."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 class Session(Protocol):
@@ -59,7 +70,7 @@ class DriveWatcher:
         files: list[dict] = []
         params = {
             "q": f"'{self.cfg.drive_folder_id}' in parents and trashed = false",
-            "fields": "nextPageToken, files(id, name, mimeType, size)",
+            "fields": "nextPageToken, files(id, name, mimeType, size, createdTime)",
             "orderBy": "createdTime",
             "pageSize": 100,
             "supportsAllDrives": "true",
@@ -67,7 +78,7 @@ class DriveWatcher:
         }
         while True:
             res = self.session.get(f"{API}/files", params=params, timeout=30)
-            res.raise_for_status()
+            self._check(res)
             body = res.json()
             files.extend(body.get("files", []))
             if not body.get("nextPageToken"):
@@ -76,21 +87,58 @@ class DriveWatcher:
 
     def download(self, file_id: str) -> bytes:
         res = self.session.get(f"{API}/files/{file_id}", params={"alt": "media", "supportsAllDrives": "true"}, timeout=120)
-        res.raise_for_status()
+        self._check(res)
         return res.content
 
-    # --- State: IDs of files already handled
-
-    def _load_seen(self) -> set[str] | None:
+    def _check(self, res: Any) -> None:
+        """Turn Google's HTTP errors into messages that say what to fix."""
+        status = getattr(res, "status_code", 200)
+        if status < 400:
+            return
         try:
-            return set(json.loads(self.cfg.drive_state_file.read_text())["seen"])
-        except FileNotFoundError:
+            detail = res.json()["error"]["message"]
+        except Exception:
+            detail = getattr(res, "reason", "") or f"HTTP {status}"
+        who = self._service_account_email() or "the service account"
+        if status == 404:
+            raise DriveError(
+                f"Google Drive can't find the folder. Check the folder link in Settings, and that the "
+                f"folder is shared with {who} (as Viewer). Google said: {detail}"
+            )
+        if status == 403:
+            raise DriveError(
+                f"Google Drive refused access. Check that the Google Drive API is enabled in your Google "
+                f"Cloud project and that the folder is shared with {who}. Google said: {detail}"
+            )
+        raise DriveError(f"Google Drive error {status}: {detail}")
+
+    def _service_account_email(self) -> str | None:
+        try:
+            return json.loads(self.cfg.google_credentials.read_text()).get("client_email")
+        except (OSError, ValueError):
             return None
 
-    def _save_seen(self, seen: set[str]) -> None:
+    # --- State: when watching started, and IDs of files already handled
+
+    def _load_state(self) -> dict:
+        try:
+            state = json.loads(self.cfg.drive_state_file.read_text())
+        except (FileNotFoundError, ValueError):
+            state = None
+        if not state or state.get("folder", self.cfg.drive_folder_id) != self.cfg.drive_folder_id:
+            # New folder: skip what's already in it, but send anything added from now on,
+            # even if the first successful check is a while away.
+            state = {"folder": self.cfg.drive_folder_id, "since": _now_rfc3339(), "seen": []}
+            self._save_state(state)
+            log.info("Started watching Google Drive folder %s; files already in it are skipped", self.cfg.drive_folder_id)
+        state.setdefault("folder", self.cfg.drive_folder_id)
+        state.setdefault("since", "")  # state from older versions: every unseen file is new
+        return state
+
+    def _save_state(self, state: dict) -> None:
         self.cfg.drive_state_file.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.cfg.drive_state_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"seen": sorted(seen)}))
+        tmp.write_text(json.dumps({**state, "seen": sorted(set(state["seen"]))}))
         tmp.replace(self.cfg.drive_state_file)
 
     # --- Polling
@@ -100,21 +148,20 @@ class DriveWatcher:
             self._poll()
 
     def _poll(self) -> None:
+        state = self._load_state()
         files = self.list_files()
-        seen = self._load_seen()
-        if seen is None:
-            # First run: files already in the folder are treated as sent, so turning
-            # the watcher on doesn't email everything that's there.
-            self._save_seen({f["id"] for f in files})
-            log.info("Drive watcher started; ignoring %d file(s) already in the folder", len(files))
-            return
-
+        seen = set(state["seen"])
         for f in files:
             if f["id"] in seen:
                 continue
             # Record it before processing, so a crash can't make us send it again and again.
             seen.add(f["id"])
-            self._save_seen(seen)
+            state["seen"] = sorted(seen)
+            self._save_state(state)
+            # RFC 3339 timestamps in UTC compare correctly as strings.
+            if state["since"] and f.get("createdTime", "") < state["since"]:
+                log.info("Skipping %s: it was in the folder before watching started", f["name"])
+                continue
             self._handle(f)
 
     def _handle(self, f: dict) -> None:

@@ -5,7 +5,8 @@ import threading
 import pytest
 from fastapi.testclient import TestClient
 
-from app import main, settings
+from app import main
+from app.config import parse_drive_folder_id
 from app.config import Config
 from tests.test_pipeline import fake_tool
 
@@ -160,9 +161,22 @@ def test_pages_served(client):
 
 
 def test_drive_folder_id_parsing():
-    assert settings.drive_folder_id("abc123") == "abc123"
-    assert settings.drive_folder_id("https://drive.google.com/drive/u/0/folders/XyZ_1-2") == "XyZ_1-2"
-    assert settings.drive_folder_id("https://drive.google.com/open?id=Q9") == "Q9"
+    assert parse_drive_folder_id("abc123") == "abc123"
+    assert parse_drive_folder_id("https://drive.google.com/drive/u/0/folders/XyZ_1-2") == "XyZ_1-2"
+    assert parse_drive_folder_id("https://drive.google.com/open?id=Q9") == "Q9"
+
+
+def test_folder_link_in_env_is_accepted():
+    """The link from the bug report, set in .env rather than on the Settings page."""
+    link = "https://drive.google.com/drive/u/0/folders/1-YOdULafds_OOWPwAm4eB-9EuZNxi-AV"
+    assert Config.from_env({"DRIVE_FOLDER_ID": link}).drive_folder_id == "1-YOdULafds_OOWPwAm4eB-9EuZNxi-AV"
+    assert Config.from_env({"DRIVE_FOLDER_ID": link + "?usp=sharing"}).drive_folder_id == "1-YOdULafds_OOWPwAm4eB-9EuZNxi-AV"
+
+
+def test_folder_that_is_not_a_link_is_rejected(set_up):
+    res = set_up.put("/api/settings", headers=auth(), json={"DRIVE_FOLDER_ID": "my kindle folder"})
+    assert res.status_code == 400
+    assert "Google Drive folder link" in res.json()["detail"]
 
 
 def test_retention_setting(set_up):

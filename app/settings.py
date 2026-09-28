@@ -12,7 +12,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .config import MAX_RETENTION_DAYS, Config, read_settings_file
+from .config import MAX_RETENTION_DAYS, Config, parse_drive_folder_id, read_settings_file
 
 # Settings the page can change. Secrets are never sent back to the browser.
 EDITABLE = [
@@ -98,18 +98,14 @@ def normalise(changes: dict) -> dict[str, str]:
         if not days.isdigit() or not 1 <= int(days) <= MAX_RETENTION_DAYS:
             errors.append(f"Keep logs for 1 to {MAX_RETENTION_DAYS} days")
     if "DRIVE_FOLDER_ID" in clean:
-        clean["DRIVE_FOLDER_ID"] = drive_folder_id(clean["DRIVE_FOLDER_ID"])
+        clean["DRIVE_FOLDER_ID"] = parse_drive_folder_id(clean["DRIVE_FOLDER_ID"])
+        if clean["DRIVE_FOLDER_ID"] and not re.fullmatch(r"[A-Za-z0-9_-]+", clean["DRIVE_FOLDER_ID"]):
+            errors.append("That doesn't look like a Google Drive folder link. Open the folder in a browser and copy its address")
     if "UPLOAD_TOKEN" in clean and len(clean["UPLOAD_TOKEN"]) < 12:
         errors.append("The access token must be at least 12 characters")
     if errors:
         raise SettingsError("; ".join(errors))
     return clean
-
-
-def drive_folder_id(value: str) -> str:
-    """Accept either a folder ID or the folder's full URL."""
-    match = re.search(r"/folders/([A-Za-z0-9_-]+)", value) or re.search(r"[?&]id=([A-Za-z0-9_-]+)", value)
-    return match.group(1) if match else value
 
 
 def save(cfg: Config, changes: dict[str, str]) -> None:

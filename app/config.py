@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -92,7 +93,7 @@ class Config:
             max_attachment_bytes=int(env.get("MAX_ATTACHMENT_BYTES", str(36 * 1024 * 1024))),
             # Where pass/fail notices go. Defaults to the Gmail account; "none" turns them off.
             notify_email=_notify_email(env.get("NOTIFY_EMAIL", ""), smtp_user),
-            drive_folder_id=env.get("DRIVE_FOLDER_ID", "").strip(),
+            drive_folder_id=parse_drive_folder_id(env.get("DRIVE_FOLDER_ID", "")),
             google_credentials=Path(env.get("GOOGLE_SERVICE_ACCOUNT_FILE", "/config/google-service-account.json")),
             drive_poll_seconds=max(15, int(env.get("DRIVE_POLL_SECONDS") or "60")),
             drive_state_file=Path(env.get("DRIVE_STATE_FILE", "/config/drive-state.json")),
@@ -119,6 +120,14 @@ class Config:
         if self.drive_enabled and not self.google_credentials.exists():
             missing.append("Google Drive folder is set but the Google key hasn't been uploaded")
         return missing
+
+
+def parse_drive_folder_id(value: str) -> str:
+    """Accept either a folder ID or the folder's full URL, e.g.
+    https://drive.google.com/drive/u/0/folders/<ID>?usp=sharing or .../open?id=<ID>."""
+    value = value.strip()
+    match = re.search(r"/folders/([A-Za-z0-9_-]+)", value) or re.search(r"[?&]id=([A-Za-z0-9_-]+)", value)
+    return match.group(1) if match else value
 
 
 def read_settings_file(path: Path) -> dict[str, str]:
