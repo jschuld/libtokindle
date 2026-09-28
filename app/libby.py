@@ -17,8 +17,10 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +43,10 @@ HEADERS = {
 # Formats we can send, best first: DRM-free EPUB needs no DRM step at all.
 FORMATS = ["ebook-epub-open", "ebook-epub-adobe", "ebook-pdf-open", "ebook-pdf-adobe"]
 EXTENSIONS = {"ebook-epub-open": ".epub", "ebook-epub-adobe": ".acsm", "ebook-pdf-open": ".pdf", "ebook-pdf-adobe": ".acsm"}
-MAX_BACKOFF_SECONDS = 4 * 3600
+# After a rate limit: retry after the normal interval, then double, up to this.
+MAX_BACKOFF_SECONDS = 2 * 3600
+# A single check (including sending new books) taking longer than this means it's stuck.
+STUCK_AFTER_SECONDS = 30 * 60
 # On some networks sentry-read.svc.overdrive.com is served by an OverDrive edge whose
 # certificate is only valid for *.odrsre.overdrive.com (also noted by libby-archiver).
 # When that exact mismatch happens, the certificate is still fully verified (trusted CA,
@@ -334,9 +339,12 @@ class LibbyWatcher:
         self.last_check: float | None = None
         self.last_error: str | None = None
         self.last_sync: dict | None = None
+        self.next_check: float | None = None
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._checking_since: float | None = None
 
     # --- State: which loans and hold problems have been handled
 
@@ -479,6 +487,8 @@ class LibbyWatcher:
             "libraries": libraries,
             "auto_borrow": self.cfg.libby_auto_borrow,
             "last_check": self.last_check,
+            "next_check": None if self._checking_since else self.next_check,
+            "checking": self._checking_since is not None,
             "last_error": self.last_error,
         }
 
@@ -488,34 +498,57 @@ class LibbyWatcher:
         interval = self.cfg.libby_poll_minutes * 60
         log.info("Watching Libby every %d minutes (auto-borrow %s)", self.cfg.libby_poll_minutes,
                  "on" if self.cfg.libby_auto_borrow else "off")
-        backoff = 0
+        rate_limited = 0
         while not self._stop.is_set():
             wait = interval
+            self._checking_since = time.time()
             try:
                 self.poll_once()
                 if self.last_error:
                     log.info("Libby check is working again")
                 self.last_error = None
-                backoff = 0
+                rate_limited = 0
             except LibbyRateLimited as exc:
-                backoff += 1
-                wait = min(interval * 2 ** backoff, MAX_BACKOFF_SECONDS)
-                log.warning("Libby is rate-limiting; next check in %d minutes", wait // 60)
+                rate_limited += 1
+                wait = min(interval * 2 ** (rate_limited - 1), MAX_BACKOFF_SECONDS)
                 self.last_error = str(exc)
             except Exception as exc:
                 # Log a failure once, not every check while it lasts.
                 if str(exc) != self.last_error:
                     log.exception("Libby check failed")
                 self.last_error = str(exc)
+            finally:
+                self._checking_since = None
             self.last_check = time.time()
+            self.next_check = self.last_check + wait
+            if rate_limited:
+                log.warning("Libby is rate-limiting (%d in a row); next check at %s", rate_limited,
+                            time.strftime("%H:%M", time.localtime(self.next_check)))
             self._wake.wait(wait)
             self._wake.clear()
+
+    def stuck(self) -> str | None:
+        """Why the background check isn't working, or None when it's fine."""
+        now = time.time()
+        if self._thread is None or not self._thread.is_alive():
+            return "the Libby check stopped running"
+        if self._checking_since and now - self._checking_since > STUCK_AFTER_SECONDS:
+            return f"a Libby check has been running for {int(now - self._checking_since) // 60} minutes"
+        if self.next_check and now - self.next_check > 5 * 60:
+            return f"the Libby check is {int(now - self.next_check) // 60} minutes overdue"
+        return None
+
+    def stack(self) -> str:
+        """Where the background thread is right now, for the log."""
+        frame = sys._current_frames().get(self._thread.ident) if self._thread else None
+        return "".join(traceback.format_stack(frame)) if frame else "(thread not running)"
 
     def check_now(self) -> None:
         self._wake.set()
 
     def start(self) -> None:
-        threading.Thread(target=self.run, name="libby-watcher", daemon=True).start()
+        self._thread = threading.Thread(target=self.run, name="libby-watcher", daemon=True)
+        self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()

@@ -82,13 +82,15 @@ function renderLibby(libby) {
   el.hidden = !libby.connected;
   $("libby-loans-box").hidden = !libby.connected;
   if (!libby.connected) return;
+  const time = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const next = libby.checking ? " Checking now…" : libby.next_check ? " Next check " + time(libby.next_check) + "." : "";
   if (libby.last_error) {
     el.className = "err";
-    el.textContent = "Libby: last check failed: " + libby.last_error;
+    el.textContent = "Libby: last check failed: " + libby.last_error + next;
   } else {
     el.className = "muted";
-    const when = libby.last_check ? new Date(libby.last_check * 1000).toLocaleTimeString() : "not yet";
-    el.textContent = "Watching Libby" + (libby.auto_borrow ? " and borrowing ready holds" : "") + " (last checked " + when + ").";
+    const when = libby.last_check ? time(libby.last_check) : "not yet";
+    el.textContent = "Watching Libby" + (libby.auto_borrow ? " and borrowing ready holds" : "") + " (last checked " + when + ")." + next;
   }
 }
 

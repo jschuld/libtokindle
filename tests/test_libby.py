@@ -355,13 +355,77 @@ def test_rate_limit_backs_off(watcher, fake):
 
     def fake_wait(seconds):
         waits.append(seconds)
-        if len(waits) == 3:
+        if len(waits) == 4:
             watcher._stop.set()
 
     watcher._wake.wait = fake_wait
     watcher.run()
-    assert waits == [3600, 7200, 14400]  # 30 min doubled, capped at 4 hours
+    assert waits == [1800, 3600, 7200, 7200]  # 30 min, doubling, capped at 2 hours
     assert "limiting" in watcher.last_error
+    assert watcher.next_check == pytest.approx(watcher.last_check + 7200)
+
+
+def test_backoff_resets_after_success(watcher, fake):
+    waits = []
+
+    def fake_wait(seconds):
+        waits.append(seconds)
+        fake.rate_limited = len(waits) < 2  # limited twice, then fine
+        if len(waits) == 4:
+            watcher._stop.set()
+
+    fake.rate_limited = True
+    watcher._wake.wait = fake_wait
+    watcher.run()
+    assert waits == [1800, 3600, 1800, 1800]
+    assert watcher.last_error is None
+
+
+def test_status_shows_next_check(watcher, fake):
+    watcher._wake.wait = lambda seconds: watcher._stop.set()
+    watcher.run()
+    status = watcher.status()
+    assert status["next_check"] == pytest.approx(status["last_check"] + 1800)
+    assert status["checking"] is False
+
+
+def test_stuck_detection(watcher):
+    import time as _time
+
+    assert watcher.stuck() == "the Libby check stopped running"  # never started
+    started = threading.Event()
+    release = threading.Event()
+    watcher._thread = threading.Thread(target=lambda: (started.set(), release.wait(5)))
+    watcher._thread.start()
+    started.wait(1)
+    try:
+        assert watcher.stuck() is None
+        watcher._checking_since = _time.time() - 31 * 60
+        assert "running for 31 minutes" in watcher.stuck()
+        assert "release.wait" in watcher.stack()  # the log shows where it hung
+        watcher._checking_since = None
+        watcher.next_check = _time.time() - 10 * 60
+        assert "10 minutes overdue" in watcher.stuck()
+    finally:
+        release.set()
+
+
+def test_watchdog_restarts_a_dead_watcher(api, fake, caplog):
+    assert api.post("/api/libby/connect", headers=AUTH, json={"card_number": fake.card_number, "pin": fake.pin}).status_code == 200
+    first = main.libby_watcher
+    first.last_error = "Libby is limiting requests for now."
+    # start() is stubbed in these tests, so the watcher has no thread: exactly a dead watcher.
+    assert main.restart_libby_if_stuck() is True
+    assert main.libby_watcher is not first
+    assert main.libby_watcher.last_error == first.last_error
+    assert "Restarting the Libby watcher because the Libby check stopped running" in caplog.text
+
+
+def test_check_now_restarts_a_stuck_watcher(api, fake):
+    api.post("/api/libby/connect", headers=AUTH, json={"card_number": fake.card_number, "pin": fake.pin})
+    first = main.libby_watcher
+    assert api.post("/api/libby/check", headers=AUTH).status_code == 200
+    assert main.libby_watcher is not first
 
 
 # --- API and settings

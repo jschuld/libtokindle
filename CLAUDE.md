@@ -123,8 +123,14 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
     logged). Fulfill: `GET card/{cardId}/loan/{titleId}/fulfill/{format}` →
     `ebook-epub-adobe` returns the .acsm body, and `ebook-epub-open` returns a 302 to a
     DRM-free file. Preference order: epub-open, epub-adobe, pdf-open, pdf-adobe.
-  - Rate limiting: `403 {"result": "whoa"}` or 429 → `LibbyRateLimited` → the wait
-    doubles, up to 4 hours.
+  - Rate limiting: `403 {"result": "whoa"}` or 429 → `LibbyRateLimited` → retry after the
+    normal interval (30 min), then 1 h, then at most 2 h; back to normal after a success.
+    Each rate limit logs "next check at HH:MM", and the status API/pages show `next_check`.
+  - **Watchdog** (`main.restart_libby_if_stuck`, run every 5 min by the housekeeping thread
+    and by "Check now"): if the watcher thread died, one check has run > 30 min, or a
+    check is > 5 min overdue, it logs the reason plus the thread's stack and starts a new
+    watcher. Added after the user saw no retry for 7 hours following a rate limit; the
+    root cause wasn't found (look for "Restarting the Libby watcher" in their logs).
 - References: odmpy (`ping/odmpy`, GPL, unmaintained) and ping's Libby calibre plugin.
   Don't copy their code. libby-archiver (`JavaGT/libby-archiver`, Node, Sept 2026) was
   evaluated and rejected as the core: too new, and it rebuilds EPUBs from the web reader.
@@ -146,7 +152,7 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
 
 ```sh
 pip install -r requirements-dev.txt
-python -m pytest -q            # currently 92 tests
+python -m pytest -q            # currently 97 tests
 UPLOAD_TOKEN=dev uvicorn app.main:app --reload
 ```
 

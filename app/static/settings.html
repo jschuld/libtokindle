@@ -197,11 +197,13 @@ function renderLibby(libby) {
   $("libby-state").textContent = "✓ Connected" + where + ".";
   $("libby-state").className = "done";
   const status = $("libby-status");
+  const next = libby.checking ? " Checking now…"
+    : libby.next_check ? " Next check " + new Date(libby.next_check * 1000).toLocaleString() + "." : "";
   if (libby.last_error) {
-    status.className = "err"; status.textContent = "Last check failed: " + libby.last_error;
+    status.className = "err"; status.textContent = "Last check failed: " + libby.last_error + next;
   } else {
     status.className = "muted";
-    status.textContent = libby.last_check ? "Last checked " + new Date(libby.last_check * 1000).toLocaleString() + "." : "Checking…";
+    status.textContent = (libby.last_check ? "Last checked " + new Date(libby.last_check * 1000).toLocaleString() + "." : "Checking…") + next;
   }
 }
 

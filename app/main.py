@@ -3,6 +3,7 @@
 import hmac
 import logging
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -20,6 +21,7 @@ log = logging.getLogger(__name__)
 
 STATIC = Path(__file__).parent / "static"
 HOUSEKEEPING_SECONDS = 3600
+WATCHDOG_SECONDS = 300
 
 cfg = Config.load()
 logs.setup(cfg.log_dir, cfg.retention_days)
@@ -48,15 +50,36 @@ def apply_config(new: Config) -> None:
             libby_watcher.start()
 
 
+def restart_libby_if_stuck() -> bool:
+    """Restart the Libby watcher if its thread died or hung. Returns True if it restarted it."""
+    global libby_watcher
+    with _apply_lock:
+        old = libby_watcher
+        reason = old.stuck() if old else None
+        if not reason:
+            return False
+        log.warning("Restarting the Libby watcher because %s. It was at:\n%s", reason, old.stack())
+        old.stop()
+        libby_watcher = LibbyWatcher(cfg, store)
+        libby_watcher.last_error = old.last_error
+        libby_watcher.start()
+        return True
+
+
 def housekeeping(stop: threading.Event) -> None:
-    """Hourly: delete logs and history entries older than the retention period."""
+    """Every 5 minutes: make sure the Libby watcher is alive. Hourly: delete logs and history
+    entries older than the retention period."""
+    last_prune = 0.0
     while not stop.is_set():
         try:
-            logs.prune(cfg.log_dir, cfg.retention_days)
-            store.prune()
+            restart_libby_if_stuck()
+            if time.time() - last_prune >= HOUSEKEEPING_SECONDS:
+                logs.prune(cfg.log_dir, cfg.retention_days)
+                store.prune()
+                last_prune = time.time()
         except Exception:
             log.exception("Housekeeping failed")
-        stop.wait(HOUSEKEEPING_SECONDS)
+        stop.wait(WATCHDOG_SECONDS)
 
 
 @asynccontextmanager
@@ -273,7 +296,9 @@ def libby_disconnect() -> dict:
 
 @app.post("/api/libby/check", dependencies=[Depends(require_token)])
 def libby_check() -> dict:
-    _libby().check_now()
+    _libby()
+    if not restart_libby_if_stuck():  # a restarted watcher checks straight away
+        _libby().check_now()
     return {"ok": True}
 
 
