@@ -108,15 +108,24 @@ async function loadLibbyLoans() {
       text.textContent = loan.title + (loan.author ? " · " + loan.author : "");
       const meta = document.createElement("div");
       meta.className = "muted";
-      meta.textContent = loan.sendable
-        ? (loan.handled ? "Already sent or skipped" : "Not sent yet")
-        : (loan.type === "ebook" ? "Read in Libby only (no download)" : "Not an ebook");
+      const when = loan.status_at ? " " + new Date(loan.status_at * 1000).toLocaleDateString() : "";
+      const STATUS = {
+        sent: "✅ Sent to your Kindle" + when,
+        failed: "❌ Sending failed" + when + ". See Logs, or try again",
+        sending: "⏳ Sending…",
+        skipped: "Not sent: you already had it when Libby was connected",
+        earlier: "Not sent automatically: you probably had it when Libby was connected",
+        new: "Not sent yet (the next check will send it)",
+      };
+      meta.textContent = !loan.sendable
+        ? (loan.type === "ebook" ? "Read in Libby only (no download)" : "Not an ebook")
+        : STATUS[loan.status] || loan.status;
       text.appendChild(meta);
       li.appendChild(text);
       if (loan.sendable) {
         const btn = document.createElement("button");
         btn.className = "secondary small";
-        btn.textContent = "Send to Kindle";
+        btn.textContent = loan.status === "sent" ? "Send again" : loan.status === "failed" ? "Try again" : "Send to Kindle";
         btn.addEventListener("click", async () => {
           btn.disabled = true;
           try {

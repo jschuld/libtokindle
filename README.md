@@ -100,8 +100,9 @@ The service can watch your Libby account. Every 30 minutes it checks for:
 - **New ebook loans**, including ones it just borrowed: it gets the book from Libby,
   removes the DRM and sends it to your Kindle.
 
-Loans you already have when you connect are skipped. To send one of them, open **Your
-Libby loans** on the main page and tap **Send to Kindle**. Audiobooks and magazines are
+Loans you already have when you connect are skipped. **Your Libby loans** on the main
+page shows what happened to each loan (sent, failed, or skipped because you already had
+it), with a **Send to Kindle** button to send one now. Audiobooks and magazines are
 ignored. A few titles can only be read in the Libby app or a browser; you get a ❌ email
 for those.
 

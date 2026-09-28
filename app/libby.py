@@ -119,6 +119,11 @@ def _edge_session() -> Any:
     return session
 
 
+def _set_outcome(state: dict, key: str, status: str) -> None:
+    """What happened to a loan: skipped, sending, sent, failed or not_ebook."""
+    state.setdefault("outcomes", {})[key] = {"status": status, "at": time.time()}
+
+
 def _write_private(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -371,7 +376,10 @@ class LibbyWatcher:
         state = self._load_state()
         if state is None:
             # First check after connecting: loans you already have are skipped.
-            state = {"seen": [item_key(loan) for loan in data.get("loans", [])], "hold_failures": []}
+            existing = [item_key(loan) for loan in data.get("loans", [])]
+            state = {"seen": existing, "hold_failures": [], "outcomes": {}}
+            for key in existing:
+                _set_outcome(state, key, "skipped")
             self._save_state(state)
             log.info("Libby connected; skipping %d loan(s) you already have", len(state["seen"]))
 
@@ -390,8 +398,11 @@ class LibbyWatcher:
             self._save_state(state)
             if not is_ebook(loan):
                 log.info("New Libby loan %s is not an ebook; not sending it", describe(loan))
+                _set_outcome(state, key, "not_ebook")
+                self._save_state(state)
                 continue
-            self.send_loan(loan)
+            _set_outcome(state, key, self.send_loan(loan))
+            self._save_state(state)
 
     def _borrow_ready_holds(self, data: dict, state: dict) -> bool:
         cards = {c.get("cardId"): c for c in data.get("cards", [])}
@@ -420,16 +431,18 @@ class LibbyWatcher:
         self._save_state(state)
         return borrowed
 
-    def send_loan(self, loan: dict) -> None:
+    def send_loan(self, loan: dict) -> str:
+        """Send one loan to the Kindle. Returns "sent" or "failed"."""
         name = describe(loan)
         fmt = best_format(loan)
         safe = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", loan.get("title") or name).strip(" .") or "book"
         job = self.store.create(safe + (EXTENSIONS[fmt] if fmt else ""), source="libby")
         log.info("Sending Libby loan %s (%s)", name, fmt or "no downloadable format")
         if not fmt:
-            return pipeline.fail(self.cfg, self.store, job,
-                                 f"“{name}” can only be read in the Libby app or a browser; "
-                                 "the library doesn't offer it as an EPUB or PDF download.")
+            pipeline.fail(self.cfg, self.store, job,
+                          f"“{name}” can only be read in the Libby app or a browser; "
+                          "the library doesn't offer it as an EPUB or PDF download.")
+            return "failed"
         try:
             try:
                 self.client.open_loan(loan)
@@ -439,8 +452,10 @@ class LibbyWatcher:
                 log.warning("Opening loan %s failed (continuing): %s", name, exc)
             data = self.client.fulfill(loan, fmt)
         except LibbyError as exc:
-            return pipeline.fail(self.cfg, self.store, job, f"Couldn't get “{name}” from Libby: {exc}")
+            pipeline.fail(self.cfg, self.store, job, f"Couldn't get “{name}” from Libby: {exc}")
+            return "failed"
         pipeline.process(self.cfg, self.store, job, data)
+        return "sent" if job.status == "done" else "failed"
 
     # --- For the web page
 
@@ -450,29 +465,40 @@ class LibbyWatcher:
         if data is None:
             with self._lock:
                 data = self.last_sync = self.client.sync()
-        seen = set((self._load_state() or {}).get("seen", []))
-        return [
-            {
-                "key": item_key(loan),
+        state = self._load_state() or {}
+        seen = set(state.get("seen", []))
+        outcomes = state.get("outcomes", {})
+        loans = []
+        for loan in data.get("loans", []):
+            key = item_key(loan)
+            outcome = outcomes.get(key) or {}
+            # "earlier": handled before outcomes were recorded (older versions).
+            status = outcome.get("status") or ("earlier" if key in seen else "new")
+            loans.append({
+                "key": key,
                 "title": loan.get("title"),
                 "author": loan.get("firstCreatorName"),
                 "type": (loan.get("type") or {}).get("id"),
                 "sendable": is_ebook(loan) and best_format(loan) is not None,
-                "handled": item_key(loan) in seen,
+                "status": status,  # new | sending | sent | failed | skipped | not_ebook | earlier
+                "status_at": outcome.get("at"),
                 "expires": loan.get("expireDate"),
-            }
-            for loan in data.get("loans", [])
-        ]
+            })
+        return loans
 
     def send_by_key(self, key: str) -> None:
         loan = next((l for l in (self.last_sync or {}).get("loans", []) if item_key(l) == key), None)
         if loan is None:
             raise LibbyError("That loan isn't in your Libby account any more. Refresh the page.")
+        self._record(key, "sending")
+        self._record(key, self.send_loan(loan))
+
+    def _record(self, key: str, status: str) -> None:
         with self._lock:
             state = self._load_state() or {"seen": [], "hold_failures": []}
             state["seen"] = sorted(set(state["seen"]) | {key})
+            _set_outcome(state, key, status)
             self._save_state(state)
-        self.send_loan(loan)
 
     def status(self) -> dict:
         cards = (self.last_sync or {}).get("cards", [])

@@ -344,9 +344,34 @@ def test_send_existing_loan_on_demand(watcher, fake, sent):
     fake.loans = [ebook("1", "Old Book", checkoutDate="old")]
     watcher.poll_once()
     [loan] = watcher.loans()
-    assert loan["sendable"] and loan["handled"]
+    assert loan["sendable"] and loan["status"] == "skipped"
     watcher.send_by_key(loan["key"])
     assert len(sent) == 1
+    [loan] = watcher.loans()
+    assert loan["status"] == "sent" and loan["status_at"]
+
+
+def test_loan_list_shows_what_happened(watcher, fake):
+    fake.loans = [ebook("1", "Had It", checkoutDate="old")]
+    watcher.poll_once()
+    fake.loans += [
+        ebook("2", "New Good", checkoutDate="d2"),
+        ebook("3", "Web Only", formats=("ebook-overdrive",), checkoutDate="d3"),
+        {**ebook("4", "Listen", checkoutDate="d4"), "type": {"id": "audiobook"}},
+    ]
+    watcher.poll_once()
+    fake.loans.append(ebook("5", "Arrived Since", checkoutDate="d5"))
+    watcher.last_sync = fake.request("GET", libby.API + "/chip/sync", headers={"Authorization": "Bearer token-3"}).json()
+    statuses = {l["title"]: l["status"] for l in watcher.loans()}
+    assert statuses == {"Had It": "skipped", "New Good": "sent", "Web Only": "failed",
+                        "Listen": "not_ebook", "Arrived Since": "new"}
+
+
+def test_loans_seen_by_an_older_version_show_as_earlier(watcher, fake):
+    fake.loans = [ebook("1", "Old Book", checkoutDate="old")]
+    watcher.cfg.libby_state_file.write_text(json.dumps({"seen": ["111:1:old"], "hold_failures": []}))
+    watcher.poll_once()
+    assert watcher.loans()[0]["status"] == "earlier"
 
 
 def test_rate_limit_backs_off(watcher, fake):

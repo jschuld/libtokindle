@@ -65,7 +65,7 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
 | `drive-state.json` | `{"folder", "since", "seen": [ids]}`. Files created before `since` are skipped |
 | `history.json` | Book history (list of Job dicts; `source` is upload, drive or libby) |
 | `libby.json` | Libby identity token (mode 600). Its presence means "connected" |
-| `libby-state.json` | `{"seen": [loan keys], "hold_failures": [hold keys]}`. Key = `cardId:titleId:checkoutDate` (or `placedDate` for holds) |
+| `libby-state.json` | `{"seen": [loan keys], "hold_failures": [hold keys], "outcomes": {loan key: {"status", "at"}}}`. Key = `cardId:titleId:checkoutDate` (or `placedDate` for holds). Status: skipped (had it at connect), sending, sent, failed, not_ebook; loans seen by older versions have no outcome and show as "earlier" |
 | `logs/libtokindle.log[.YYYY-MM-DD]` | Daily logs |
 
 ## libgourou facts (learned the hard way)
@@ -152,7 +152,7 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
 
 ```sh
 pip install -r requirements-dev.txt
-python -m pytest -q            # currently 97 tests
+python -m pytest -q            # currently 99 tests
 UPLOAD_TOKEN=dev uvicorn app.main:app --reload
 ```
 
