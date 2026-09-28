@@ -36,46 +36,45 @@ You need an always-on computer at home that runs Docker on a normal Intel/AMD (a
 The image is built on [`bcliang/docker-libgourou`](https://hub.docker.com/r/bcliang/docker-libgourou),
 which provides the libgourou tools and is published for amd64 only (not Raspberry Pi).
 
-### 1. Amazon
-- Find your Send to Kindle address: amazon.com → *Manage Your Content and Devices* →
-  *Preferences* → *Personal Document Settings*.
-- On the same page, add the email address you'll send from to the
-  **Approved Personal Document E-mail List**.
+### 1. Before you start
+- **Amazon**: find your Send to Kindle address (amazon.com → *Manage Your Content and
+  Devices* → *Preferences* → *Personal Document Settings*). On the same page, add your
+  Gmail address to the **Approved Personal Document E-mail List**.
+- **Gmail**: create an app password at <https://myaccount.google.com/apppasswords>
+  (this needs 2-step verification turned on).
 
-### 2. Gmail app password
-Create an app password at <https://myaccount.google.com/apppasswords>. This needs
-2-step verification turned on. Use it as `SMTP_PASSWORD`.
-
-### 3. Configure and build
+### 2. Build and start
 ```sh
 git clone https://github.com/jschuld/libtokindle && cd libtokindle
-cp .env.example .env        # then fill it in
-docker compose build
+docker compose up -d --build
 ```
 
-### 4. Activate an Adobe device (once)
-```sh
-docker compose run --rm libtokindle activate
-```
-This writes Adobe keys to `./config/adept`. Back that folder up. Re-activating uses
-up another of your Adobe account's limited device slots, and books already sent
-don't depend on it. Put `ADOBE_ID`/`ADOBE_PASSWORD` in `.env` to activate with an
-Adobe account instead of anonymously. A free account works.
+### 3. Set it up in the browser
+Open `http://<server-ip>:8080`.
+1. Choose an **access token**: a password of at least 12 characters for these pages.
+2. You land on **Settings**. Fill in your Kindle address, Gmail address and app
+   password, then tap **Save and send a test email**.
+3. Under **Adobe device**, tap **Activate**. This is a one-time step.
 
-### 5. Start it
-```sh
-docker compose up -d
-curl localhost:8080/healthz      # {"ok": true, ...} once everything is set up
-```
+Everything is saved in `./config` on the server, and changes apply as soon as you save.
+**Back up `./config`**: it holds the Adobe keys, and re-activating uses up another of
+your Adobe account's limited device slots.
 
-### 6. Reach it from your iPhone
+`/healthz` returns `{"ok": true}` once everything is set up.
+
+Settings can also come from a `.env` file (see `.env.example`). Anything saved on the
+Settings page takes priority over it. If the server is reachable by people you don't
+trust, set `UPLOAD_TOKEN` in `.env` before the first start, because otherwise whoever
+opens the page first chooses the token.
+
+### 4. Reach it from your iPhone
 Don't open the service to the internet. Instead:
 - **At home only**: open `http://<server-ip>:8080` on your home Wi-Fi.
 - **Anywhere (recommended)**: install [Tailscale](https://tailscale.com) (free) on the
   server and your iPhone, then open `http://<server-name>:8080`.
 
 In Safari, **Share → Add to Home Screen** makes it behave like an app. Enter your
-`UPLOAD_TOKEN` the first time; Safari remembers it.
+access token the first time; Safari remembers it.
 
 ## Optional: watch a Google Drive folder
 
@@ -94,17 +93,14 @@ see the one folder you share with it. It's free.
    3. **IAM & Admin → Service accounts → Create service account**. Any name works,
       e.g. `libtokindle`. Skip the optional roles and access steps.
    4. Open the new account → **Keys → Add key → Create new key → JSON**. A `.json` file downloads.
-   5. Save it on the server as `./config/google-service-account.json`, next to `./config/adept`.
-2. **Share the folder**: in Google Drive, create a folder (e.g. `Kindle`), click
-   **Share**, and add the service account's email address (it looks like
-   `libtokindle@<project>.iam.gserviceaccount.com`, shown in the console) as a **Viewer**.
-3. **Configure**: open the folder in a browser and copy the ID from the URL
-   (`https://drive.google.com/drive/folders/<ID>`). Put it in `.env`:
-   ```
-   DRIVE_FOLDER_ID=<ID>
-   ```
-4. Restart with `docker compose up -d`. The web page then shows "Also watching your
-   Google Drive folder" with the last check time, or the error if something is wrong.
+2. On the **Settings** page, under **Google Drive folder**, tap **Upload key (.json)**
+   and choose that file. The page then shows the service account's email address,
+   which looks like `libtokindle@<project>.iam.gserviceaccount.com`.
+3. **Share the folder**: in Google Drive, create a folder (e.g. `Kindle`), click
+   **Share**, and add that address as a **Viewer**.
+4. Paste the folder's link (or just its ID) into **Folder link or ID** and tap **Save**.
+   The main page then shows "Also watching your Google Drive folder" with the last
+   check time, or the error if something is wrong.
 
 On the iPhone, the Google Drive app adds Drive to **Files**, so Libby downloads can
 be saved straight into the folder.
@@ -116,7 +112,7 @@ it private and only share the one folder with it.
 
 The same container runs on an `e2-micro` VM (free tier in `us-west1`, `us-central1`
 or `us-east1`):
-1. Create a Debian VM, install Docker, and follow steps 3–5 above.
+1. Create a Debian VM, install Docker, and follow steps 2–3 above.
 2. Either install Tailscale on the VM (easiest, nothing is exposed), or put
    [Caddy](https://caddyserver.com) in front for HTTPS on a domain, opening only
    port 443. Never serve it over plain HTTP on the internet, because the access

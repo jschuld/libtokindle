@@ -1,8 +1,11 @@
-"""Settings, read from environment variables (see .env.example)."""
+"""Settings: environment variables (see .env.example), overridden by the ones saved
+from the web page's Settings screen in /config/settings.json."""
 
 from __future__ import annotations
 
+import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,24 +45,36 @@ class Config:
     google_credentials: Path
     drive_poll_seconds: int
     drive_state_file: Path
+    settings_file: Path
+
+    @property
+    def adobe_activated(self) -> bool:
+        return (self.adept_dir / "activation.xml").exists()
 
     @property
     def drive_enabled(self) -> bool:
         return bool(self.drive_folder_id)
 
     @classmethod
-    def from_env(cls) -> "Config":
-        env = os.environ
-        smtp_port = int(env.get("SMTP_PORT", "587"))
+    def load(cls) -> "Config":
+        """Environment variables, with the web page's saved settings on top."""
+        env = dict(os.environ)
+        env.update(read_settings_file(Path(env.get("SETTINGS_FILE", "/config/settings.json"))))
+        return cls.from_env(env)
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> "Config":
+        env = os.environ if env is None else env
+        smtp_port = int(env.get("SMTP_PORT") or "587")
         smtp_user = env.get("SMTP_USER", "")
         return cls(
             upload_token=env.get("UPLOAD_TOKEN", ""),
             kindle_email=env.get("KINDLE_EMAIL", ""),
-            smtp_host=env.get("SMTP_HOST", "smtp.gmail.com"),
+            smtp_host=env.get("SMTP_HOST") or "smtp.gmail.com",
             smtp_port=smtp_port,
             smtp_user=smtp_user,
             smtp_password=env.get("SMTP_PASSWORD", ""),
-            smtp_from=env.get("SMTP_FROM", smtp_user),
+            smtp_from=env.get("SMTP_FROM") or smtp_user,
             smtp_ssl=_bool(env.get("SMTP_SSL"), default=smtp_port == 465),
             adept_dir=Path(env.get("ADEPT_DIR", "/config/adept")),
             work_dir=Path(env.get("WORK_DIR", "/tmp/libtokindle")),
@@ -73,23 +88,32 @@ class Config:
             notify_email=_notify_email(env.get("NOTIFY_EMAIL", ""), smtp_user),
             drive_folder_id=env.get("DRIVE_FOLDER_ID", "").strip(),
             google_credentials=Path(env.get("GOOGLE_SERVICE_ACCOUNT_FILE", "/config/google-service-account.json")),
-            drive_poll_seconds=max(15, int(env.get("DRIVE_POLL_SECONDS", "60"))),
+            drive_poll_seconds=max(15, int(env.get("DRIVE_POLL_SECONDS") or "60")),
             drive_state_file=Path(env.get("DRIVE_STATE_FILE", "/config/drive-state.json")),
+            settings_file=Path(env.get("SETTINGS_FILE", "/config/settings.json")),
         )
 
     def problems(self) -> list[str]:
         """Missing settings that would stop a book from being delivered."""
         missing = []
-        for name, value in [
-            ("UPLOAD_TOKEN", self.upload_token),
-            ("KINDLE_EMAIL", self.kindle_email),
-            ("SMTP_USER", self.smtp_user),
-            ("SMTP_PASSWORD", self.smtp_password),
+        for label, value in [
+            ("Access token", self.upload_token),
+            ("Kindle email", self.kindle_email),
+            ("Gmail address", self.smtp_user),
+            ("Gmail app password", self.smtp_password),
         ]:
             if not value:
-                missing.append(f"{name} is not set")
-        if not (self.adept_dir / "activation.xml").exists():
-            missing.append(f"Adobe device not activated (no activation.xml in {self.adept_dir}); run `activate` first")
+                missing.append(f"{label} isn't set")
+        if not self.adobe_activated:
+            missing.append("Adobe device isn't activated")
         if self.drive_enabled and not self.google_credentials.exists():
-            missing.append(f"DRIVE_FOLDER_ID is set but the Google service account key {self.google_credentials} is missing")
+            missing.append("Google Drive folder is set but the Google key hasn't been uploaded")
         return missing
+
+
+def read_settings_file(path: Path) -> dict[str, str]:
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    return {str(k): str(v) for k, v in data.items()}

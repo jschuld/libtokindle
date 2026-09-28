@@ -137,4 +137,5 @@ and a file over 50 MB.
 - [x] Tests with fake libgourou tools
 - [x] Google Drive folder watcher (`app/drive.py`, service account with read-only access, polls every 60 s)
 - [x] Pass/fail email to the Gmail address after every job (`NOTIFY_EMAIL`, defaults to `SMTP_USER`)
+- [x] Settings page (`/settings`): all settings, Google key upload, Adobe activation and a test email, saved to `/config/settings.json`, with no file editing needed
 - [x] First real run: build the image, activate, and send one Auckland Libraries loan (milestone 1)

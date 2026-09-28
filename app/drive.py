@@ -22,6 +22,10 @@ log = logging.getLogger(__name__)
 API = "https://www.googleapis.com/drive/v3"
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
+# When settings change, a new watcher starts while the old one may still be mid-check;
+# this keeps them from both handling the same new file.
+_poll_lock = threading.Lock()
+
 
 class Session(Protocol):
     def get(self, url: str, params: dict | None = None, timeout: int = ...) -> Any: ...
@@ -92,6 +96,10 @@ class DriveWatcher:
     # --- Polling
 
     def poll_once(self) -> None:
+        with _poll_lock:
+            self._poll()
+
+    def _poll(self) -> None:
         files = self.list_files()
         seen = self._load_seen()
         if seen is None:

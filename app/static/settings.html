@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Settings · Library to Kindle</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  #key-file { display: none; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row code { flex: 1; }
+  .row button { width: auto; padding: 8px 12px; font-size: 14px; }
+  .done { color: var(--ok); font-weight: 600; }
+  #save-status { min-height: 1.4em; margin: 8px 0 0; font-size: 15px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="top"><h1>Settings</h1><a href="/">← Back</a></div>
+  <p class="sub">Changes take effect as soon as you save. There's no need to restart anything.</p>
+
+  <div class="card" id="login" hidden>
+    <label for="token">Access token</label>
+    <input type="password" id="token" autocomplete="current-password">
+    <button id="login-btn">Continue</button>
+    <p id="login-status" class="err"></p>
+  </div>
+
+  <div id="form" hidden>
+    <div class="problems" id="problems"></div>
+
+    <section class="card">
+      <h2>Kindle</h2>
+      <p class="muted">Find it on Amazon under <i>Manage Your Content and Devices → Preferences → Personal Document Settings</i>. On the same page, add your Gmail address to the <b>Approved Personal Document E-mail List</b>.</p>
+      <label for="KINDLE_EMAIL">Send to Kindle email</label>
+      <input type="email" id="KINDLE_EMAIL" placeholder="yourname@kindle.com" autocomplete="off">
+    </section>
+
+    <section class="card">
+      <h2>Gmail (sends the books)</h2>
+      <p class="muted">Use an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">app password</a>, not your normal password. It needs 2-step verification turned on.</p>
+      <label for="SMTP_USER">Gmail address</label>
+      <input type="email" id="SMTP_USER" placeholder="you@gmail.com" autocomplete="off">
+      <label for="SMTP_PASSWORD">App password</label>
+      <input type="password" id="SMTP_PASSWORD" autocomplete="new-password">
+      <details>
+        <summary>Not using Gmail?</summary>
+        <label for="SMTP_HOST">SMTP server</label>
+        <input type="text" id="SMTP_HOST" placeholder="smtp.gmail.com" autocomplete="off">
+        <label for="SMTP_PORT">SMTP port <span class="hint">587 (STARTTLS) or 465 (SSL)</span></label>
+        <input type="number" id="SMTP_PORT" placeholder="587">
+        <label for="SMTP_FROM">From address <span class="hint">if different from the login</span></label>
+        <input type="email" id="SMTP_FROM" autocomplete="off">
+      </details>
+      <button class="secondary" id="test-email">Save and send a test email</button>
+      <p id="test-status" class="muted"></p>
+    </section>
+
+    <section class="card">
+      <h2>Result emails</h2>
+      <p class="muted">After each book you get an email saying whether it worked.</p>
+      <label for="NOTIFY_EMAIL">Send them to <span class="hint">empty = your Gmail address; <code>none</code> = off</span></label>
+      <input type="text" id="NOTIFY_EMAIL" autocomplete="off">
+    </section>
+
+    <section class="card">
+      <h2>Google Drive folder <span class="hint">(optional)</span></h2>
+      <p class="muted">New files added to this folder are sent to your Kindle automatically. The <a href="https://github.com/jschuld/libtokindle#optional-watch-a-google-drive-folder" target="_blank" rel="noopener">README</a> explains how to create the service account key.</p>
+      <label>1. Service account key</label>
+      <p id="key-state" class="muted"></p>
+      <label class="secondary upload" for="key-file" style="font-weight:600">Upload key (.json)</label>
+      <input type="file" id="key-file" accept=".json,application/json">
+      <p id="key-status" class="muted"></p>
+      <div id="share-hint" hidden>
+        <label>2. Share your Drive folder with this address, as Viewer</label>
+        <div class="row"><code id="client-email"></code><button class="secondary" id="copy">Copy</button></div>
+        <p></p>
+      </div>
+      <label for="DRIVE_FOLDER_ID">3. Folder link or ID <span class="hint">leave empty to turn off</span></label>
+      <input type="text" id="DRIVE_FOLDER_ID" placeholder="https://drive.google.com/drive/folders/…" autocomplete="off">
+      <details>
+        <summary>Advanced</summary>
+        <label for="DRIVE_POLL_SECONDS">Check every (seconds)</label>
+        <input type="number" id="DRIVE_POLL_SECONDS" min="15" placeholder="60">
+      </details>
+    </section>
+
+    <section class="card">
+      <h2>Adobe device</h2>
+      <p class="muted">A one-time step that lets this server open library loans.</p>
+      <p id="adobe-state"></p>
+      <div id="activate-box" hidden>
+        <details>
+          <summary>Use an Adobe ID instead of anonymous (optional)</summary>
+          <label for="adobe-id">Adobe ID email</label>
+          <input type="email" id="adobe-id" autocomplete="off">
+          <label for="adobe-password">Adobe password</label>
+          <input type="password" id="adobe-password" autocomplete="off">
+        </details>
+        <button class="secondary" id="activate">Activate</button>
+        <p id="activate-status" class="muted"></p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Access token</h2>
+      <p class="muted">The password for these pages. Leave empty to keep the current one.</p>
+      <label for="UPLOAD_TOKEN">New access token <span class="hint">at least 12 characters</span></label>
+      <input type="password" id="UPLOAD_TOKEN" autocomplete="new-password">
+    </section>
+
+    <div class="save-bar">
+      <button id="save">Save</button>
+      <p id="save-status"></p>
+    </div>
+  </div>
+</main>
+<script src="/static/common.js"></script>
+<script>
+const FIELDS = ["KINDLE_EMAIL", "SMTP_USER", "SMTP_PASSWORD", "SMTP_HOST", "SMTP_PORT", "SMTP_FROM",
+                "NOTIFY_EMAIL", "DRIVE_FOLDER_ID", "DRIVE_POLL_SECONDS", "UPLOAD_TOKEN"];
+const SECRETS = ["SMTP_PASSWORD", "UPLOAD_TOKEN"];
+
+onUnauthorized = () => {
+  $("login").hidden = false; $("form").hidden = true;
+  $("login-status").textContent = getToken() ? "Wrong access token." : "";
+};
+
+function render(s) {
+  $("login").hidden = true; $("form").hidden = false;
+  for (const name of FIELDS) {
+    if (SECRETS.includes(name)) {
+      $(name).value = "";
+      $(name).placeholder = s.secrets_set[name] ? "Saved. Leave empty to keep it" : "";
+    } else {
+      $(name).value = s.values[name] || "";
+    }
+  }
+  $("problems").textContent = s.problems.length ? "Still to do: " + s.problems.join("; ") + "." : "";
+
+  const key = s.google_key;
+  $("key-state").textContent = key.present ? "✓ Key uploaded." : "No key uploaded yet.";
+  $("key-state").className = key.present ? "done" : "muted";
+  $("share-hint").hidden = !key.present;
+  $("client-email").textContent = key.client_email || "";
+
+  $("adobe-state").textContent = s.adobe_activated ? "✓ Activated" : "Not activated yet.";
+  $("adobe-state").className = s.adobe_activated ? "done" : "";
+  $("activate-box").hidden = s.adobe_activated;
+}
+
+async function load() {
+  try { render(await api("/api/settings")); } catch {}
+}
+
+async function save() {
+  const changes = {};
+  for (const name of FIELDS) {
+    const value = $(name).value.trim();
+    if (SECRETS.includes(name) && !value) continue;
+    changes[name] = value;
+  }
+  const s = await api("/api/settings", { method: "PUT", json: changes });
+  if (changes.UPLOAD_TOKEN) setToken(changes.UPLOAD_TOKEN);
+  render(s);
+}
+
+function withStatus(el, fn) {
+  return async () => {
+    el.className = "muted"; el.textContent = "Working…";
+    try {
+      const msg = await fn();
+      el.className = "ok"; el.textContent = msg;
+    } catch (e) {
+      if (e.message === "unauthorised") return;
+      el.className = "err"; el.textContent = e.message;
+    }
+  };
+}
+
+$("save").addEventListener("click", withStatus($("save-status"), async () => {
+  await save();
+  return "Saved ✓";
+}));
+
+$("test-email").addEventListener("click", withStatus($("test-status"), async () => {
+  await save();
+  const res = await api("/api/settings/test-email", { method: "POST" });
+  return "Sent a test email to " + res.sent_to + ". Check your inbox.";
+}));
+
+$("key-file").addEventListener("change", withStatus($("key-status"), async () => {
+  const file = $("key-file").files[0];
+  $("key-file").value = "";
+  if (!file) return "";
+  const form = new FormData(); form.append("file", file);
+  render(await api("/api/settings/google-key", { method: "POST", body: form }));
+  return "Uploaded. Now share your folder with the address below.";
+}));
+
+$("copy").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText($("client-email").textContent); $("copy").textContent = "Copied"; } catch {}
+});
+
+$("activate").addEventListener("click", withStatus($("activate-status"), async () => {
+  $("activate").disabled = true;
+  try {
+    render(await api("/api/settings/activate", {
+      method: "POST", json: { adobe_id: $("adobe-id").value, password: $("adobe-password").value },
+    }));
+  } finally {
+    $("activate").disabled = false;
+  }
+  return "Activated. Back up the config folder on the server.";
+}));
+
+$("login-btn").addEventListener("click", () => { setToken($("token").value.trim()); load(); });
+$("token").addEventListener("keydown", (e) => { if (e.key === "Enter") $("login-btn").click(); });
+
+load();
+</script>
+</body>
+</html>
