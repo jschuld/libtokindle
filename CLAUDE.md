@@ -1,8 +1,9 @@
 # libtokindle
 
 Self-hosted service that sends Auckland Libraries (Libby/OverDrive) ebook loans to a
-Kindle. Upload a loan's `.acsm` file, or drop it (or an EPUB/PDF) in a watched Google
-Drive folder. The service downloads the book with libgourou, strips the Adobe ADEPT DRM,
+Kindle. Upload a loan's `.acsm` file, drop it (or an EPUB/PDF) in a watched Google
+Drive folder, or let it watch the Libby account (auto-borrows ready holds and sends new
+ebook loans). The service downloads the book with libgourou, strips the Adobe ADEPT DRM,
 emails the EPUB to the Kindle's Send to Kindle address, and emails a ✅/❌ result to the
 user's Gmail. `README.md` is the user guide; `PLAN.md` holds the original design and the
 decision log.
@@ -18,6 +19,8 @@ decision log.
   approved sender list.
 - Wants no file editing on the server: everything is configured on the `/settings` page.
 - Logs and history must be kept **at most 30 days** (a hard cap in code).
+- Libby: **auto-borrow ready holds: yes**; **skip loans that exist when connecting**;
+  **check every 30 minutes**.
 - Updates on the server with `git pull && docker compose up -d --build`.
 - Work on the branch the session names (so far `claude/drm-removal-kindle-workflow-fxqaly`),
   commit, and push. No PRs unless asked.
@@ -38,6 +41,9 @@ app/
                 the result email and never raises
   drive.py      DriveWatcher: polls one folder with a service account (drive.readonly)
                 through the Drive v3 REST API and google-auth AuthorizedSession
+  libby.py      LibbyClient (unofficial Libby API: link by setup code, sync, borrow,
+                open + fulfill a loan) and LibbyWatcher (polls, auto-borrows ready ebook
+                holds, sends new ebook loans through pipeline.process, rate-limit backoff)
   jobs.py       JobStore: book history, persisted to /config/history.json, trimmed by retention
   logs.py       daily TimedRotatingFileHandler in /config/logs, age-based prune(), read()
   mailer.py     SMTP (STARTTLS on 587, SSL on 465): send_to_kindle(), send_notification()
@@ -57,7 +63,9 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
 | `settings.json` | Values saved on the Settings page, keyed by env var name; they override `.env` |
 | `google-service-account.json` | Drive service account key |
 | `drive-state.json` | `{"folder", "since", "seen": [ids]}`. Files created before `since` are skipped |
-| `history.json` | Book history (list of Job dicts) |
+| `history.json` | Book history (list of Job dicts; `source` is upload, drive or libby) |
+| `libby.json` | Libby identity token (mode 600). Its presence means "connected" |
+| `libby-state.json` | `{"seen": [loan keys], "hold_failures": [hold keys]}`. Key = `cardId:titleId:checkoutDate` (or `placedDate` for holds) |
 | `logs/libtokindle.log[.YYYY-MM-DD]` | Daily logs |
 
 ## libgourou facts (learned the hard way)
@@ -77,6 +85,33 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
   again from Libby".
 - An EPUB is DRM-protected if it contains `META-INF/rights.xml`.
 
+## Libby facts
+
+- There's no official API. Base URL `https://sentry-read.svc.overdrive.com`, JSON, with the
+  header `Authorization: Bearer <identity>`.
+  - Link: `POST chip?client=dewey` (anonymous) → `POST chip/clone/code {"code": "12345678"}`
+    with that token → `POST chip?client=dewey` again with the token (so the identity
+    carries the cards) → save it. A 401 later is handled by re-POSTing `chip` with the
+    old token.
+  - `GET chip/sync` returns `cards`, `loans` and `holds`. A ready hold has `isAvailable: true`.
+    Type is in `type.id` (`ebook`, `audiobook`, `magazine`), formats in `formats[].id`.
+  - Borrow: `POST card/{cardId}/loan/{titleId}` with
+    `{"period": N, "units": "days", "lucky_day": null, "title_format": "ebook"}`. N comes
+    from `card.lendingPeriods[type or "book"].preference[0]`, else the last `options`
+    entry, else 21.
+  - Before fulfilling: `GET open/{type}/card/{cardId}/title/{titleId}` (failure only
+    logged). Fulfill: `GET card/{cardId}/loan/{titleId}/fulfill/{format}` →
+    `ebook-epub-adobe` returns the .acsm body, and `ebook-epub-open` returns a 302 to a
+    DRM-free file. Preference order: epub-open, epub-adobe, pdf-open, pdf-adobe.
+  - Rate limiting: `403 {"result": "whoa"}` or 429 → `LibbyRateLimited` → the wait
+    doubles, up to 4 hours.
+- References: odmpy (`ping/odmpy`, GPL, unmaintained) and ping's Libby calibre plugin.
+  Don't copy their code. libby-archiver (`JavaGT/libby-archiver`, Node, Sept 2026) was
+  evaluated and rejected as the core: too new, and it rebuilds EPUBs from the web reader.
+- Untested against real Libby: the dev environment's proxy blocks
+  sentry-read.svc.overdrive.com. Whether fulfilling `ebook-epub-adobe` locks the loan's
+  format in the Libby app is unverified.
+
 ## Google Drive facts
 
 - The folder must be shared with the service account's `client_email` as Viewer, and the
@@ -91,10 +126,13 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
 
 ```sh
 pip install -r requirements-dev.txt
-python -m pytest -q            # currently 63 tests
+python -m pytest -q            # currently 87 tests
 UPLOAD_TOKEN=dev uvicorn app.main:app --reload
 ```
 
+- `tests/test_libby.py` has a `FakeLibby` HTTP fake (chip, clone, sync, open, fulfill
+  with redirect, borrow, 401 expiry, `whoa` rate limit). Extend it when the Libby client
+  changes.
 - The tests use **fake libgourou tools** (`fake_tool()` in tests/test_pipeline.py writes
   small Python scripts) and fake Drive and SMTP. Make the fakes reject what the real
   tools reject: the `-o`/`-O` bug slipped through because the fake accepted it.
@@ -113,6 +151,7 @@ UPLOAD_TOKEN=dev uvicorn app.main:app --reload
 
 ## Limits of the cloud dev environment
 
+- `sentry-read.svc.overdrive.com` (Libby) is blocked by the proxy too.
 - There's **no Docker daemon**, `forge.soutade.fr` (libgourou source) is blocked, and
   Docker Hub is rate-limited, so the image can't be built or inspected here. The user
   builds and tests it on their PC. Say so plainly rather than claiming it's verified.

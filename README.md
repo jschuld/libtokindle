@@ -22,7 +22,11 @@ for the design.
 your watched Google Drive folder, and save. Within about a minute the service picks it up
 and sends it. EPUB and PDF files you put in that folder are sent as they are.
 
-Either way, you get an email at your Gmail address saying whether it worked (✅) or
+**Or automatically from Libby:** connect your Libby account on the Settings page. When a
+hold becomes ready, the service borrows it and sends it to your Kindle, and any new ebook
+loan is sent too. See [Connect Libby](#optional-connect-libby).
+
+Every way, you get an email at your Gmail address saying whether it worked (✅) or
 failed (❌), with the reason.
 
 Each `.acsm` file can be used only once, and it expires after a while. If the upload
@@ -87,6 +91,31 @@ Both are stored in `./config` on the server (`logs/` and `history.json`) and del
 automatically after 30 days. You can shorten that under **Settings → Logs and history**,
 anywhere from 1 to 30 days. `docker compose logs -f` shows the same log live, plus a
 line for every web request.
+
+## Optional: connect Libby
+
+The service can watch your Libby account. Every 30 minutes it checks for:
+- **Holds that are ready**: it borrows them straight away (you can turn this off), using
+  your library's usual loan length.
+- **New ebook loans**, including ones it just borrowed: it gets the book from Libby,
+  removes the DRM and sends it to your Kindle.
+
+Loans you already have when you connect are skipped. To send one of them, open **Your
+Libby loans** on the main page and tap **Send to Kindle**. Audiobooks and magazines are
+ignored. A few titles can only be read in the Libby app or a browser; you get a ❌ email
+for those.
+
+To connect:
+1. In the Libby app, open the menu and choose **Copy To Another Device**. Libby shows an
+   8-digit setup code, valid for a few minutes.
+2. On the **Settings** page, under **Libby**, type the code and tap **Connect Libby**.
+
+The server is then linked like another device on your Libby account. No library card
+number or PIN is stored; the link lives in `./config/libby.json`. **Disconnect** removes it.
+
+Libby has no official API. This uses the same one the Libby app uses, so it could stop
+working if OverDrive changes it, and Libby limits how often it can be asked (checks are
+at most every 15 minutes, with longer waits if Libby pushes back).
 
 ## Optional: watch a Google Drive folder
 

@@ -14,6 +14,7 @@ from . import logs, mailer, pipeline, settings
 from .config import Config
 from .drive import DriveWatcher
 from .jobs import JobStore
+from .libby import LibbyClient, LibbyError, LibbyWatcher
 
 log = logging.getLogger(__name__)
 
@@ -25,20 +26,26 @@ logs.setup(cfg.log_dir, cfg.retention_days)
 store = JobStore(cfg.history_file, cfg.retention_days)
 watcher: DriveWatcher | None = None
 _watcher_stop: threading.Event | None = None
+libby_watcher: LibbyWatcher | None = None
 _apply_lock = threading.Lock()
 
 
 def apply_config(new: Config) -> None:
-    """Switch to new settings and restart the Drive watcher to match."""
-    global cfg, watcher, _watcher_stop
+    """Switch to new settings and restart the Drive and Libby watchers to match."""
+    global cfg, watcher, _watcher_stop, libby_watcher
     with _apply_lock:
         if _watcher_stop:
             _watcher_stop.set()
+        if libby_watcher:
+            libby_watcher.stop()
         cfg = new
         logs.set_retention(cfg.retention_days)
         store.retention_days = cfg.retention_days
         watcher = DriveWatcher(cfg, store) if cfg.drive_enabled else None
         _watcher_stop = watcher.start() if watcher and cfg.google_credentials.exists() else None
+        libby_watcher = LibbyWatcher(cfg, store) if cfg.libby_connected else None
+        if libby_watcher:
+            libby_watcher.start()
 
 
 def housekeeping(stop: threading.Event) -> None:
@@ -62,6 +69,8 @@ async def lifespan(app: FastAPI):
     stop_housekeeping.set()
     if _watcher_stop:
         _watcher_stop.set()
+    if libby_watcher:
+        libby_watcher.stop()
 
 
 app = FastAPI(title="libtokindle", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -109,6 +118,7 @@ def status() -> dict:
         "kindle_email": cfg.kindle_email,
         "problems": cfg.problems(),
         "drive": drive_status(),
+        "libby": libby_watcher.status() if libby_watcher else {"connected": False},
         "recent": [job.to_dict() for job in store.recent()],
     }
 
@@ -226,3 +236,57 @@ def get_logs(file: str | None = None, problems_only: bool = False) -> dict:
 @app.get("/api/history", dependencies=[Depends(require_token)])
 def get_history() -> dict:
     return {"retention_days": cfg.retention_days, "jobs": [job.to_dict() for job in store.recent(limit=1000)]}
+
+
+# --- Libby
+
+def _libby() -> LibbyWatcher:
+    if not libby_watcher:
+        raise HTTPException(status_code=400, detail="Libby isn't connected. Connect it on the Settings page.")
+    return libby_watcher
+
+
+@app.post("/api/libby/connect", dependencies=[Depends(require_token)])
+def libby_connect(code: str = Body(embed=True)) -> dict:
+    try:
+        LibbyClient(cfg.libby_file).connect(code)
+    except LibbyError as exc:
+        log.warning("Connecting Libby failed: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    # A new link starts fresh: loans already in the account are skipped.
+    cfg.libby_state_file.unlink(missing_ok=True)
+    log.info("Libby account connected")
+    apply_config(Config.load())
+    return {"libby": libby_watcher.status() if libby_watcher else {"connected": False}}
+
+
+@app.post("/api/libby/disconnect", dependencies=[Depends(require_token)])
+def libby_disconnect() -> dict:
+    cfg.libby_file.unlink(missing_ok=True)
+    cfg.libby_state_file.unlink(missing_ok=True)
+    log.info("Libby account disconnected")
+    apply_config(Config.load())
+    return {"libby": {"connected": False}}
+
+
+@app.post("/api/libby/check", dependencies=[Depends(require_token)])
+def libby_check() -> dict:
+    _libby().check_now()
+    return {"ok": True}
+
+
+@app.get("/api/libby/loans", dependencies=[Depends(require_token)])
+def libby_loans() -> dict:
+    try:
+        return {"loans": _libby().loans()}
+    except LibbyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@app.post("/api/libby/send", dependencies=[Depends(require_token)])
+def libby_send(background: BackgroundTasks, key: str = Body(embed=True)) -> dict:
+    watcher_ = _libby()
+    if not any(loan["key"] == key for loan in watcher_.loans()):
+        raise HTTPException(status_code=404, detail="That loan isn't in your Libby account any more. Refresh the page.")
+    background.add_task(watcher_.send_by_key, key)
+    return {"ok": True}

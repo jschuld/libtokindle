@@ -53,10 +53,18 @@ class Config:
     log_dir: Path
     history_file: Path
     retention_days: int
+    libby_file: Path
+    libby_state_file: Path
+    libby_poll_minutes: int
+    libby_auto_borrow: bool
 
     @property
     def adobe_activated(self) -> bool:
         return (self.adept_dir / "activation.xml").exists()
+
+    @property
+    def libby_connected(self) -> bool:
+        return self.libby_file.exists()
 
     @property
     def drive_enabled(self) -> bool:
@@ -102,6 +110,12 @@ class Config:
             history_file=Path(env.get("HISTORY_FILE", "/config/history.json")),
             # How long logs and the book history are kept: 1 to 30 days.
             retention_days=min(MAX_RETENTION_DAYS, max(1, int(env.get("LOG_RETENTION_DAYS") or MAX_RETENTION_DAYS))),
+            # Libby: the linked account (written by the Settings page) and what's been handled.
+            libby_file=Path(env.get("LIBBY_FILE", "/config/libby.json")),
+            libby_state_file=Path(env.get("LIBBY_STATE_FILE", "/config/libby-state.json")),
+            # Libby rate-limits, so never check more often than every 15 minutes.
+            libby_poll_minutes=max(15, int(env.get("LIBBY_POLL_MINUTES") or "30")),
+            libby_auto_borrow=_bool(env.get("LIBBY_AUTO_BORROW"), default=True),
         )
 
     def problems(self) -> list[str]:

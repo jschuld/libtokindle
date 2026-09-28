@@ -127,6 +127,7 @@ and a file over 50 MB.
   button, plus a watched Google Drive folder. No Shortcut, share target or email-in.
 - **Email**: generic SMTP settings. Gmail with an app password is the documented default.
 - **libgourou**: use the prebuilt `bcliang/docker-libgourou` image as the base image (the home PC is an Intel i7, so amd64) instead of compiling from source.
+- **Libby**: own small Python client for Libby's (unofficial) API rather than libby-archiver (too new, Node, rebuilds EPUBs from the web reader) or odmpy (unmaintained since 2023, GPL, no holds). Fetch the loan's Adobe EPUB .acsm (or a DRM-free EPUB when offered) and reuse the libgourou pipeline. Auto-borrow on, skip existing loans at connect, check every 30 minutes (decided with the user).
 - **Jobs**: kept in memory (last 50), because there's one user and no history needs to survive a restart.
 
 ## 7. Status
@@ -139,4 +140,6 @@ and a file over 50 MB.
 - [x] Pass/fail email to the Gmail address after every job (`NOTIFY_EMAIL`, defaults to `SMTP_USER`)
 - [x] Settings page (`/settings`): all settings, Google key upload, Adobe activation and a test email, saved to `/config/settings.json`, with no file editing needed
 - [x] Persistent log files (`/config/logs`, daily) and book history (`/config/history.json`), deleted after 1–30 days (default 30); Logs page (`/logs`)
+- [x] Libby integration (`app/libby.py`): linked with a Libby setup code, checks every 30 min, auto-borrows ready ebook holds, sends new ebook loans through the existing .acsm pipeline; loans present at connect are skipped (Send to Kindle button for those)
+- [ ] First real Libby run on the home server (the Libby API can't be reached from the dev environment)
 - [x] First real run: build the image, activate, and send one Auckland Libraries loan (milestone 1)
