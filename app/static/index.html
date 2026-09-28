@@ -6,50 +6,25 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="To Kindle">
 <title>Library to Kindle</title>
+<link rel="stylesheet" href="/static/style.css">
 <style>
-  :root {
-    --bg: #f6f5f2; --card: #fff; --text: #1d1d1b; --muted: #6b6a66;
-    --accent: #1f6f5c; --accent-text: #fff; --border: #e2e0da;
-    --ok: #1f7a3a; --err: #b3261e;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #161615; --card: #22221f; --text: #ecebe7; --muted: #a3a29c;
-      --accent: #3fae90; --accent-text: #0e1a16; --border: #34332f;
-      --ok: #5cc279; --err: #f08a80;
-    }
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 17px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  }
-  main { max-width: 440px; margin: 0 auto; padding: 32px 16px; }
-  h1 { font-size: 26px; margin: 0 0 4px; }
-  .sub { color: var(--muted); margin: 0 0 24px; }
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; }
-  button, .upload {
-    display: block; width: 100%; padding: 16px; border: 0; border-radius: 12px;
-    background: var(--accent); color: var(--accent-text); font: inherit; font-weight: 600;
-    text-align: center; cursor: pointer;
-  }
-  button:disabled { opacity: .5; }
-  input[type=password] {
-    width: 100%; padding: 14px; margin: 8px 0 12px; font: inherit; color: var(--text);
-    background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
-  }
   #file { display: none; }
   #status { margin-top: 16px; min-height: 1.5em; }
-  .ok { color: var(--ok); } .err { color: var(--err); } .muted { color: var(--muted); font-size: 15px; }
-  ul { list-style: none; padding: 0; margin: 24px 0 0; }
-  li { padding: 10px 0; border-top: 1px solid var(--border); font-size: 15px; }
-  .link { background: none; color: var(--muted); padding: 8px; margin-top: 16px; font-weight: 400; font-size: 14px; }
 </style>
 </head>
 <body>
 <main>
-  <h1>Library → Kindle</h1>
+  <div class="top"><h1>Library → Kindle</h1><span class="nav" id="settings-link" hidden><a href="/logs">Logs</a> <a href="/settings">Settings</a></span></div>
   <p class="sub">Upload the <b>.acsm</b> file from Libby. The book will be sent to your Kindle.</p>
+
+  <div class="card" id="setup" hidden>
+    <h2>Welcome</h2>
+    <p class="muted">Choose an access token: a password of at least 12 characters. You type it once on each device, and it keeps other people on your network out.</p>
+    <label for="new-token">Access token</label>
+    <input type="password" id="new-token" autocomplete="new-password">
+    <button id="create">Save and continue to settings</button>
+    <p id="setup-status" class="err"></p>
+  </div>
 
   <div class="card" id="login" hidden>
     <label for="token">Access token</label>
@@ -62,42 +37,52 @@
     <label class="upload" for="file" id="pick">Upload .acsm file</label>
     <input type="file" id="file" accept=".acsm,application/vnd.adobe.adept+xml">
     <div id="status"></div>
+    <p id="drive" class="muted" hidden></p>
     <ul id="recent"></ul>
   </div>
 
   <button class="link" id="logout" hidden>Forget access token</button>
 </main>
+<script src="/static/common.js"></script>
 <script>
-const $ = (id) => document.getElementById(id);
 const LABELS = {
   queued: "Queued…", fulfilling: "Downloading from the library…",
   removing_drm: "Removing DRM…", sending: "Emailing to Kindle…",
   done: "Sent! It should appear on your Kindle in a few minutes.", failed: "Failed",
 };
 
-function getToken() { try { return localStorage.getItem("token") || ""; } catch { return ""; } }
-function setToken(t) { try { t ? localStorage.setItem("token", t) : localStorage.removeItem("token"); } catch {} }
-
-async function api(path, options = {}) {
-  const res = await fetch(path, { ...options, headers: { Authorization: "Bearer " + getToken() } });
-  const body = await res.json().catch(() => ({}));
-  if (res.status === 401) { showLogin("Wrong access token."); throw new Error("unauthorised"); }
-  if (!res.ok) throw new Error(body.detail || res.statusText);
-  return body;
-}
+onUnauthorized = () => showLogin("Wrong access token.");
 
 function showLogin(msg = "") {
-  $("login").hidden = false; $("app").hidden = true; $("logout").hidden = true;
+  $("login").hidden = false; $("app").hidden = true; $("logout").hidden = true; $("settings-link").hidden = true;
   $("login-status").textContent = msg;
 }
 
 async function showApp() {
   const status = await api("/api/status");
-  $("login").hidden = true; $("app").hidden = false; $("logout").hidden = false;
+  $("login").hidden = true; $("app").hidden = false; $("logout").hidden = false; $("settings-link").hidden = false;
   if (status.problems.length) {
-    setStatus("err", "Server isn't set up yet: " + status.problems.join("; "));
+    setStatus("err", "Not set up yet: " + status.problems.join("; ") + ". ");
+    const link = document.createElement("a");
+    link.href = "/settings"; link.textContent = "Open Settings";
+    $("status").appendChild(link);
   }
   renderRecent(status.recent);
+  renderDrive(status.drive);
+}
+
+function renderDrive(drive) {
+  const el = $("drive");
+  el.hidden = !drive.enabled;
+  if (!drive.enabled) return;
+  if (drive.last_error) {
+    el.className = "err";
+    el.textContent = "Google Drive folder: last check failed: " + drive.last_error;
+  } else {
+    el.className = "muted";
+    const when = drive.last_check ? new Date(drive.last_check * 1000).toLocaleTimeString() : "not yet";
+    el.textContent = "Also watching your Google Drive folder (last checked " + when + ").";
+  }
 }
 
 function setStatus(cls, text) {
@@ -110,7 +95,7 @@ function renderRecent(jobs) {
     const li = document.createElement("li");
     const when = new Date(job.created * 1000).toLocaleString();
     const state = job.status === "done" ? "✅" : job.status === "failed" ? "❌" : "⏳";
-    li.textContent = `${state} ${job.title || job.filename}`;
+    li.textContent = `${state} ${job.title || job.filename}` + (job.source === "drive" ? " (Drive)" : "");
     const meta = document.createElement("div");
     meta.className = "muted";
     meta.textContent = job.error ? `${when} · ${job.error}` : when;
@@ -144,7 +129,7 @@ $("file").addEventListener("change", async () => {
     if (e.message !== "unauthorised") setStatus("err", "❌ " + e.message);
   } finally {
     $("pick").style.pointerEvents = ""; $("pick").style.opacity = "";
-    api("/api/status").then((s) => renderRecent(s.recent)).catch(() => {});
+    api("/api/status").then((s) => { renderRecent(s.recent); renderDrive(s.drive); }).catch(() => {});
   }
 });
 
@@ -155,7 +140,26 @@ $("save").addEventListener("click", () => {
 $("token").addEventListener("keydown", (e) => { if (e.key === "Enter") $("save").click(); });
 $("logout").addEventListener("click", () => { setToken(""); showLogin(); });
 
-getToken() ? showApp().catch(() => {}) : showLogin();
+$("create").addEventListener("click", async () => {
+  const token = $("new-token").value.trim();
+  try {
+    const res = await fetch("/api/setup", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.detail || res.statusText);
+    setToken(token);
+    location.href = "/settings";
+  } catch (e) {
+    $("setup-status").textContent = e.message;
+  }
+});
+
+(async () => {
+  const setup = await fetch("/api/setup").then((r) => r.json()).catch(() => ({}));
+  if (setup.needs_setup) { $("setup").hidden = false; return; }
+  getToken() ? showApp().catch(() => {}) : showLogin();
+})();
 </script>
 </body>
 </html>

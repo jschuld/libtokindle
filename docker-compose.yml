@@ -2,7 +2,10 @@ services:
   libtokindle:
     build: .
     image: libtokindle
-    env_file: .env
+    # Optional: settings are normally made on the web page's Settings screen.
+    env_file:
+      - path: .env
+        required: false
     ports:
       - "8080:8000"
     volumes:

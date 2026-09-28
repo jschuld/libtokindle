@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Logs · Library to Kindle</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  main { max-width: 760px; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+  .tabs button { width: auto; flex: 1; padding: 10px; background: none; color: var(--accent); border: 1px solid var(--accent); }
+  .tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-text); }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 12px; }
+  .controls select { flex: 1; min-width: 160px; padding: 10px; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 10px; }
+  .controls label { font-weight: 400; display: flex; gap: 6px; align-items: center; }
+  .controls button { width: auto; padding: 10px 14px; }
+  pre {
+    margin: 0; padding: 12px; overflow-x: auto; max-height: 70vh; overflow-y: auto;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word;
+  }
+  .warn { color: var(--err); }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  td { padding: 10px 6px; border-top: 1px solid var(--border); vertical-align: top; }
+  td:first-child { width: 1.5em; }
+  .when { white-space: nowrap; }
+</style>
+</head>
+<body>
+<main>
+  <div class="top"><h1>Logs</h1><span class="nav"><a href="/settings">Settings</a> <a href="/">← Back</a></span></div>
+  <p class="sub" id="retention">&nbsp;</p>
+
+  <div class="card" id="login" hidden>
+    <label for="token">Access token</label>
+    <input type="password" id="token" autocomplete="current-password">
+    <button id="login-btn">Continue</button>
+    <p id="login-status" class="err"></p>
+  </div>
+
+  <div id="content" hidden>
+    <div class="tabs" role="tablist">
+      <button role="tab" id="tab-history" aria-selected="true">Books</button>
+      <button role="tab" id="tab-log" aria-selected="false">Log</button>
+    </div>
+
+    <section class="card" id="history-panel">
+      <table><tbody id="history"></tbody></table>
+      <p class="muted" id="history-empty" hidden>No books yet.</p>
+    </section>
+
+    <section class="card" id="log-panel" hidden>
+      <div class="controls">
+        <select id="file" aria-label="Day"></select>
+        <label><input type="checkbox" id="problems-only"> Problems only</label>
+        <button class="secondary" id="refresh">Refresh</button>
+      </div>
+      <pre id="log"></pre>
+    </section>
+  </div>
+</main>
+<script src="/static/common.js"></script>
+<script>
+onUnauthorized = () => {
+  $("login").hidden = false; $("content").hidden = true;
+  $("login-status").textContent = getToken() ? "Wrong access token." : "";
+};
+
+const STATUS = { done: "✅", failed: "❌" };
+
+async function loadHistory() {
+  const res = await api("/api/history");
+  $("login").hidden = true; $("content").hidden = false;
+  $("retention").textContent = `Kept for ${res.retention_days} days (change in Settings).`;
+  const body = $("history"); body.innerHTML = "";
+  $("history-empty").hidden = res.jobs.length > 0;
+  for (const job of res.jobs) {
+    const tr = document.createElement("tr");
+    const icon = document.createElement("td");
+    icon.textContent = STATUS[job.status] || "⏳";
+    const what = document.createElement("td");
+    const name = document.createElement("div");
+    name.textContent = (job.title || job.filename) + (job.source === "drive" ? " (Drive)" : "");
+    const meta = document.createElement("div");
+    meta.className = job.error ? "muted warn" : "muted";
+    const when = new Date(job.created * 1000).toLocaleString();
+    meta.textContent = job.error ? `${when} · ${job.error}` : (job.title ? `${when} · ${job.filename}` : when);
+    what.append(name, meta);
+    tr.append(icon, what);
+    body.appendChild(tr);
+  }
+}
+
+async function loadLog(file) {
+  const params = new URLSearchParams();
+  if (file) params.set("file", file);
+  if ($("problems-only").checked) params.set("problems_only", "true");
+  const res = await api("/api/logs?" + params);
+  const select = $("file");
+  select.innerHTML = "";
+  for (const f of res.files) {
+    const opt = document.createElement("option");
+    opt.value = f.name;
+    opt.textContent = f.name === "libtokindle.log" ? `Today (${f.date})` : f.date;
+    opt.selected = f.name === res.file;
+    select.appendChild(opt);
+  }
+  const pre = $("log");
+  pre.innerHTML = "";
+  if (!res.lines.length) {
+    pre.textContent = res.files.length ? "Nothing to show." : "No log files yet.";
+    return;
+  }
+  for (const line of res.lines) {
+    const span = document.createElement("span");
+    if (/^\S+ \S+ (WARNING|ERROR|CRITICAL) /.test(line)) span.className = "warn";
+    span.textContent = line + "\n";
+    pre.appendChild(span);
+  }
+  pre.scrollTop = pre.scrollHeight;
+}
+
+function showTab(name) {
+  $("tab-history").setAttribute("aria-selected", name === "history");
+  $("tab-log").setAttribute("aria-selected", name === "log");
+  $("history-panel").hidden = name !== "history";
+  $("log-panel").hidden = name !== "log";
+  (name === "log" ? loadLog($("file").value || undefined) : loadHistory()).catch(() => {});
+}
+
+$("tab-history").addEventListener("click", () => showTab("history"));
+$("tab-log").addEventListener("click", () => showTab("log"));
+$("file").addEventListener("change", () => loadLog($("file").value).catch(() => {}));
+$("problems-only").addEventListener("change", () => loadLog($("file").value).catch(() => {}));
+$("refresh").addEventListener("click", () => loadLog($("file").value).catch(() => {}));
+$("login-btn").addEventListener("click", () => { setToken($("token").value.trim()); loadHistory().catch(() => {}); });
+$("token").addEventListener("keydown", (e) => { if (e.key === "Enter") $("login-btn").click(); });
+
+loadHistory().catch(() => {});
+</script>
+</body>
+</html>

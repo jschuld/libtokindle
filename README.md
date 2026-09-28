@@ -3,8 +3,9 @@
 Send Auckland Libraries (Libby) ebook loans to your Kindle from your phone's browser.
 
 Upload the loan's `.acsm` file on a small web page. The service downloads the book,
-removes the Adobe DRM with [libgourou](https://forge.soutade.fr/soutade/libgourou),
-and emails the EPUB to your Kindle's Send to Kindle address. See [PLAN.md](PLAN.md)
+removes the Adobe DRM with [libgourou](https://forge.soutade.fr/soutade/libgourou)
+(through the `bcliang/docker-libgourou` image), and emails the EPUB to your Kindle's
+Send to Kindle address. See [PLAN.md](PLAN.md)
 for the design.
 
 > Use this only for your own loans, and delete the book from your Kindle when the loan ends.
@@ -17,6 +18,13 @@ for the design.
    from **Downloads**.
 3. Within a few minutes the book appears on your Kindle.
 
+**Or through Google Drive:** in Libby's download, tap **Share → Save to Files**, choose
+your watched Google Drive folder, and save. Within about a minute the service picks it up
+and sends it. EPUB and PDF files you put in that folder are sent as they are.
+
+Either way, you get an email at your Gmail address saying whether it worked (✅) or
+failed (❌), with the reason.
+
 Each `.acsm` file can be used only once, and it expires after a while. If the upload
 fails with a download error, download the `.acsm` again from Libby.
 
@@ -24,54 +32,99 @@ Books in BorrowBox can't be sent, because BorrowBox doesn't offer an `.acsm` fil
 
 ## Setup (Docker at home)
 
-You need a computer at home that stays on and runs Docker (a NAS, a mini PC or a Raspberry Pi 4/5).
+You need an always-on computer at home that runs Docker on a normal Intel/AMD (amd64) processor.
+The image is built on [`bcliang/docker-libgourou`](https://hub.docker.com/r/bcliang/docker-libgourou),
+which provides the libgourou tools and is published for amd64 only (not Raspberry Pi).
 
-### 1. Amazon
-- Find your Send to Kindle address: amazon.com → *Manage Your Content and Devices* →
-  *Preferences* → *Personal Document Settings*.
-- On the same page, add the email address you'll send from to the
-  **Approved Personal Document E-mail List**.
+### 1. Before you start
+- **Amazon**: find your Send to Kindle address (amazon.com → *Manage Your Content and
+  Devices* → *Preferences* → *Personal Document Settings*). On the same page, add your
+  Gmail address to the **Approved Personal Document E-mail List**.
+- **Gmail**: create an app password at <https://myaccount.google.com/apppasswords>
+  (this needs 2-step verification turned on).
 
-### 2. Gmail app password
-Create an app password at <https://myaccount.google.com/apppasswords>. This needs
-2-step verification turned on. Use it as `SMTP_PASSWORD`.
-
-### 3. Configure and build
+### 2. Build and start
 ```sh
 git clone https://github.com/jschuld/libtokindle && cd libtokindle
-cp .env.example .env        # then fill it in
-docker compose build
+docker compose up -d --build
 ```
 
-### 4. Activate an Adobe device (once)
-```sh
-docker compose run --rm libtokindle activate
-```
-This writes Adobe keys to `./config/adept`. Back that folder up. Re-activating uses
-up another of your Adobe account's limited device slots, and books already sent
-don't depend on it. Put `ADOBE_ID`/`ADOBE_PASSWORD` in `.env` to activate with an
-Adobe account instead of anonymously. A free account works.
+### 3. Set it up in the browser
+Open `http://<server-ip>:8080`.
+1. Choose an **access token**: a password of at least 12 characters for these pages.
+2. You land on **Settings**. Fill in your Kindle address, Gmail address and app
+   password, then tap **Save and send a test email**.
+3. Under **Adobe device**, tap **Activate**. This is a one-time step.
 
-### 5. Start it
-```sh
-docker compose up -d
-curl localhost:8080/healthz      # {"ok": true, ...} once everything is set up
-```
+Everything is saved in `./config` on the server, and changes apply as soon as you save.
+**Back up `./config`**: it holds the Adobe keys, and re-activating uses up another of
+your Adobe account's limited device slots.
 
-### 6. Reach it from your iPhone
+`/healthz` returns `{"ok": true}` once everything is set up.
+
+Settings can also come from a `.env` file (see `.env.example`). Anything saved on the
+Settings page takes priority over it. If the server is reachable by people you don't
+trust, set `UPLOAD_TOKEN` in `.env` before the first start, because otherwise whoever
+opens the page first chooses the token.
+
+### 4. Reach it from your iPhone
 Don't open the service to the internet. Instead:
 - **At home only**: open `http://<server-ip>:8080` on your home Wi-Fi.
 - **Anywhere (recommended)**: install [Tailscale](https://tailscale.com) (free) on the
   server and your iPhone, then open `http://<server-name>:8080`.
 
 In Safari, **Share → Add to Home Screen** makes it behave like an app. Enter your
-`UPLOAD_TOKEN` the first time; Safari remembers it.
+access token the first time; Safari remembers it.
+
+## Logs and history
+
+The **Logs** page (link at the top of the main page) has two tabs:
+- **Books**: every file sent from the web page or Google Drive, with ✅/❌ and the reason
+  for any failure. It survives restarts and updates.
+- **Log**: the service's log for each day, with a **Problems only** filter.
+
+Both are stored in `./config` on the server (`logs/` and `history.json`) and deleted
+automatically after 30 days. You can shorten that under **Settings → Logs and history**,
+anywhere from 1 to 30 days. `docker compose logs -f` shows the same log live, plus a
+line for every web request.
+
+## Optional: watch a Google Drive folder
+
+The service checks one Drive folder every minute and sends any **new** file in it:
+`.acsm` loans go through the DRM step, and EPUB, PDF, DOCX, TXT and similar files are
+sent as they are. Files already in the folder when you turn this on are skipped. Files
+are never changed or deleted, and each file is sent only once. Delete old files from the
+folder whenever you like.
+
+Drive access uses a Google Cloud *service account*: a robot account that can only
+see the one folder you share with it. It's free.
+
+1. **Create the service account** in the [Google Cloud console](https://console.cloud.google.com):
+   1. Create a project, or pick an existing one.
+   2. **APIs & Services → Library**: search for **Google Drive API** and click **Enable**.
+   3. **IAM & Admin → Service accounts → Create service account**. Any name works,
+      e.g. `libtokindle`. Skip the optional roles and access steps.
+   4. Open the new account → **Keys → Add key → Create new key → JSON**. A `.json` file downloads.
+2. On the **Settings** page, under **Google Drive folder**, tap **Upload key (.json)**
+   and choose that file. The page then shows the service account's email address,
+   which looks like `libtokindle@<project>.iam.gserviceaccount.com`.
+3. **Share the folder**: in Google Drive, create a folder (e.g. `Kindle`), click
+   **Share**, and add that address as a **Viewer**.
+4. Paste the folder's link (or just its ID) into **Folder link or ID** and tap **Save**.
+   The main page then shows "Also watching your Google Drive folder" with the last
+   check time, or the error if something is wrong.
+
+On the iPhone, the Google Drive app adds Drive to **Files**, so Libby downloads can
+be saved straight into the folder.
+
+The key file gives read access to everything shared with the service account, so keep
+it private and only share the one folder with it.
 
 ## Alternative: Google Cloud free tier
 
 The same container runs on an `e2-micro` VM (free tier in `us-west1`, `us-central1`
 or `us-east1`):
-1. Create a Debian VM, install Docker, and follow steps 3–5 above.
+1. Create a Debian VM, install Docker, and follow steps 2–3 above.
 2. Either install Tailscale on the VM (easiest, nothing is exposed), or put
    [Caddy](https://caddyserver.com) in front for HTTPS on a domain, opening only
    port 443. Never serve it over plain HTTP on the internet, because the access
