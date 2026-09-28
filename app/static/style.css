@@ -37,6 +37,7 @@ li { padding: 10px 0; border-top: 1px solid var(--border); font-size: 15px; }
 a { color: var(--accent); }
 .top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .top a { font-size: 15px; white-space: nowrap; }
+.nav a + a { margin-left: 14px; }
 .card + .card { margin-top: 16px; }
 h2 { font-size: 18px; margin: 0 0 4px; }
 .card > p.muted:first-of-type { margin-top: 0; }

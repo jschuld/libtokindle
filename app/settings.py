@@ -12,7 +12,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .config import Config, read_settings_file
+from .config import MAX_RETENTION_DAYS, Config, read_settings_file
 
 # Settings the page can change. Secrets are never sent back to the browser.
 EDITABLE = [
@@ -25,6 +25,7 @@ EDITABLE = [
     "NOTIFY_EMAIL",
     "DRIVE_FOLDER_ID",
     "DRIVE_POLL_SECONDS",
+    "LOG_RETENTION_DAYS",
     "UPLOAD_TOKEN",
 ]
 SECRETS = {"SMTP_PASSWORD", "UPLOAD_TOKEN"}
@@ -47,6 +48,7 @@ def current(cfg: Config) -> dict:
         "NOTIFY_EMAIL": _saved_value(cfg, "NOTIFY_EMAIL"),
         "DRIVE_FOLDER_ID": cfg.drive_folder_id,
         "DRIVE_POLL_SECONDS": str(cfg.drive_poll_seconds),
+        "LOG_RETENTION_DAYS": str(cfg.retention_days),
     }
     return {
         "values": values,
@@ -91,6 +93,10 @@ def normalise(changes: dict) -> dict[str, str]:
     if "DRIVE_POLL_SECONDS" in clean:
         if not clean["DRIVE_POLL_SECONDS"].isdigit() or int(clean["DRIVE_POLL_SECONDS"]) < 15:
             errors.append("Drive check interval must be a number of seconds, at least 15")
+    if "LOG_RETENTION_DAYS" in clean:
+        days = clean["LOG_RETENTION_DAYS"]
+        if not days.isdigit() or not 1 <= int(days) <= MAX_RETENTION_DAYS:
+            errors.append(f"Keep logs for 1 to {MAX_RETENTION_DAYS} days")
     if "DRIVE_FOLDER_ID" in clean:
         clean["DRIVE_FOLDER_ID"] = drive_folder_id(clean["DRIVE_FOLDER_ID"])
     if "UPLOAD_TOKEN" in clean and len(clean["UPLOAD_TOKEN"]) < 12:

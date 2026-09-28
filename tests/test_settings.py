@@ -163,3 +163,13 @@ def test_drive_folder_id_parsing():
     assert settings.drive_folder_id("abc123") == "abc123"
     assert settings.drive_folder_id("https://drive.google.com/drive/u/0/folders/XyZ_1-2") == "XyZ_1-2"
     assert settings.drive_folder_id("https://drive.google.com/open?id=Q9") == "Q9"
+
+
+def test_retention_setting(set_up):
+    res = set_up.put("/api/settings", headers=auth(), json={"LOG_RETENTION_DAYS": "31"})
+    assert res.status_code == 400
+    assert "1 to 30 days" in res.json()["detail"]
+    res = set_up.put("/api/settings", headers=auth(), json={"LOG_RETENTION_DAYS": "7"})
+    assert res.json()["values"]["LOG_RETENTION_DAYS"] == "7"
+    assert main.cfg.retention_days == 7
+    assert main.store.retention_days == 7

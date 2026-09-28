@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+MAX_RETENTION_DAYS = 30
+
+
 def _bool(value: str | None, default: bool = False) -> bool:
     if value is None or value == "":
         return default
@@ -46,6 +49,9 @@ class Config:
     drive_poll_seconds: int
     drive_state_file: Path
     settings_file: Path
+    log_dir: Path
+    history_file: Path
+    retention_days: int
 
     @property
     def adobe_activated(self) -> bool:
@@ -91,6 +97,10 @@ class Config:
             drive_poll_seconds=max(15, int(env.get("DRIVE_POLL_SECONDS") or "60")),
             drive_state_file=Path(env.get("DRIVE_STATE_FILE", "/config/drive-state.json")),
             settings_file=Path(env.get("SETTINGS_FILE", "/config/settings.json")),
+            log_dir=Path(env.get("LOG_DIR", "/config/logs")),
+            history_file=Path(env.get("HISTORY_FILE", "/config/history.json")),
+            # How long logs and the book history are kept: 1 to 30 days.
+            retention_days=min(MAX_RETENTION_DAYS, max(1, int(env.get("LOG_RETENTION_DAYS") or MAX_RETENTION_DAYS))),
         )
 
     def problems(self) -> list[str]:

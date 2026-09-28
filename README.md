@@ -76,6 +76,18 @@ Don't open the service to the internet. Instead:
 In Safari, **Share → Add to Home Screen** makes it behave like an app. Enter your
 access token the first time; Safari remembers it.
 
+## Logs and history
+
+The **Logs** page (link at the top of the main page) has two tabs:
+- **Books**: every file sent from the web page or Google Drive, with ✅/❌ and the reason
+  for any failure. It survives restarts and updates.
+- **Log**: the service's log for each day, with a **Problems only** filter.
+
+Both are stored in `./config` on the server (`logs/` and `history.json`) and deleted
+automatically after 30 days. You can shorten that under **Settings → Logs and history**,
+anywhere from 1 to 30 days. `docker compose logs -f` shows the same log live, plus a
+line for every web request.
+
 ## Optional: watch a Google Drive folder
 
 The service checks one Drive folder every minute and sends any **new** file in it:

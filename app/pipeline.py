@@ -51,6 +51,7 @@ def process(cfg: Config, store: JobStore, job: Job, data: bytes) -> None:
 
     An .acsm loan is downloaded and its DRM removed; any other supported file is sent as it is.
     """
+    log.info("Processing %s (from %s)", job.filename, job.source)
     cfg.work_dir.mkdir(parents=True, exist_ok=True)
     workdir = Path(tempfile.mkdtemp(prefix=f"{job.id}-", dir=cfg.work_dir))
     try:
@@ -86,8 +87,10 @@ def process(cfg: Config, store: JobStore, job: Job, data: bytes) -> None:
             raise PipelineError(f"Couldn't email the book: {exc}") from exc
 
         store.update(job, status="done")
+        log.info("Sent to Kindle: %s (%s, from %s)", title or book.name, job.filename, job.source)
     except PipelineError as exc:
         store.update(job, status="failed", error=str(exc))
+        log.warning("Not sent: %s (from %s): %s", job.filename, job.source, exc)
     except Exception as exc:
         log.exception("job %s failed", job.id)
         store.update(job, status="failed", error=f"Unexpected error: {exc}")
@@ -100,6 +103,7 @@ def process(cfg: Config, store: JobStore, job: Job, data: bytes) -> None:
 def fail(cfg: Config, store: JobStore, job: Job, error: str) -> None:
     """Mark a job failed before the pipeline could start, and tell the user."""
     store.update(job, status="failed", error=error)
+    log.warning("Not sent: %s (from %s): %s", job.filename, job.source, error)
     notify(cfg, job)
 
 
@@ -117,6 +121,7 @@ def notify(cfg: Config, job: Job) -> None:
         body = f"“{job.filename}” (from {via}) could not be sent to your Kindle.\n\n{job.error}"
     try:
         mailer.send_notification(cfg, subject, body)
+        log.info("Result email sent to %s", cfg.notify_email)
     except Exception:
         log.exception("couldn't send notification for job %s", job.id)
 
@@ -149,7 +154,7 @@ def fulfil(cfg: Config, workdir: Path, acsm: bytes) -> Path:
         )
     except PipelineError as exc:
         raise PipelineError(
-            f"{exc}. If you've already used this .acsm or it's more than a few days old, "
+            f"{str(exc).rstrip('.')}. If you've already used this .acsm or it's more than a few days old, "
             "download it again from Libby (Loans → Read With… → EPUB)."
         ) from None
     books = [p for p in fulfilled.iterdir() if p.suffix.lower() in {".epub", ".pdf"}]

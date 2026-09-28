@@ -138,9 +138,13 @@ class DriveWatcher:
         while not stop.is_set():
             try:
                 self.poll_once()
+                if self.last_error:
+                    log.info("Google Drive check is working again")
                 self.last_error = None
             except Exception as exc:
-                log.exception("Drive check failed")
+                # Log a failure once, not every minute while it lasts.
+                if str(exc) != self.last_error:
+                    log.exception("Drive check failed")
                 self.last_error = str(exc)
             self.last_check = time.time()
             stop.wait(self.cfg.drive_poll_seconds)
