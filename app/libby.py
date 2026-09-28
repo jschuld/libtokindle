@@ -42,6 +42,11 @@ HEADERS = {
 FORMATS = ["ebook-epub-open", "ebook-epub-adobe", "ebook-pdf-open", "ebook-pdf-adobe"]
 EXTENSIONS = {"ebook-epub-open": ".epub", "ebook-epub-adobe": ".acsm", "ebook-pdf-open": ".pdf", "ebook-pdf-adobe": ".acsm"}
 MAX_BACKOFF_SECONDS = 4 * 3600
+# On some networks sentry-read.svc.overdrive.com is served by an OverDrive edge whose
+# certificate is only valid for *.odrsre.overdrive.com (also noted by libby-archiver).
+# When that exact mismatch happens, the certificate is still fully verified (trusted CA,
+# dates), but checked against this OverDrive name instead of the host name.
+EDGE_CERT_NAME = "sentry-read.odrsre.overdrive.com"
 
 
 class LibbyError(Exception):
@@ -89,6 +94,26 @@ def library_name(card: dict) -> str:
     return (card.get("library") or {}).get("name") or card.get("advantageKey") or card.get("cardName") or "your library"
 
 
+def _is_hostname_mismatch(exc: Exception) -> bool:
+    text = str(exc)
+    return "Hostname mismatch" in text or "doesn't match" in text or "not valid for" in text
+
+
+def _edge_session() -> Any:
+    """A requests session that verifies the OverDrive edge certificate by its own name."""
+    import requests
+    from requests.adapters import HTTPAdapter
+
+    class EdgeAdapter(HTTPAdapter):
+        def init_poolmanager(self, *args, **kwargs):
+            kwargs["assert_hostname"] = EDGE_CERT_NAME
+            super().init_poolmanager(*args, **kwargs)
+
+    session = requests.Session()
+    session.mount(API + "/", EdgeAdapter())
+    return session
+
+
 def _write_private(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -108,6 +133,8 @@ class LibbyClient:
 
             http = requests.Session()
         self.http = http
+        self.api_http = http  # replaced by an edge session if Libby's certificate name mismatches
+        self._edge_factory = _edge_session
 
     # --- The saved session: {"identity", "chip", "library": {...}, "linked"}
 
@@ -140,7 +167,7 @@ class LibbyClient:
         if not anonymous:
             headers["Authorization"] = f"Bearer {token or self._identity()}"
         url = endpoint if endpoint.startswith("https://") else f"{API}/{endpoint}"
-        res = self.http.request(method, url, headers=headers, timeout=60, **kwargs)
+        res = self._send(method, url, headers=headers, **kwargs)
         status = res.status_code
         result = _result(res) if status >= 400 else ""
         if (status == 401 or result == "missing_chip") and not anonymous and token is None and retry:
@@ -152,6 +179,28 @@ class LibbyClient:
             where = endpoint.rsplit("/", 1)[-1] if endpoint.startswith("https://") else endpoint.split("/")[0]
             raise LibbyError(f"Libby said {status} for {where}: {_detail(res)}")
         return res
+
+    def _send(self, method: str, url: str, **kwargs) -> Any:
+        """One HTTP request to Libby, turning network failures into readable errors."""
+        import requests
+
+        http = self.api_http if url.startswith(API + "/") else self.http
+        try:
+            return http.request(method, url, timeout=60, **kwargs)
+        except requests.exceptions.SSLError as exc:
+            if not (url.startswith(API + "/") and http is self.http and _is_hostname_mismatch(exc)):
+                raise LibbyError(f"Couldn't make a secure connection to Libby: {exc}") from None
+            log.warning("Libby's server presented a certificate for OverDrive's edge network instead of "
+                        "%s; verifying it as %s", API.removeprefix("https://"), EDGE_CERT_NAME)
+            self.api_http = self._edge_factory()
+            try:
+                return self.api_http.request(method, url, timeout=60, **kwargs)
+            except requests.exceptions.SSLError as exc2:
+                raise LibbyError(f"Couldn't make a secure connection to Libby: {exc2}") from None
+            except requests.exceptions.RequestException as exc2:
+                raise LibbyError(f"Couldn't reach Libby: {exc2}") from None
+        except requests.exceptions.RequestException as exc:
+            raise LibbyError(f"Couldn't reach Libby: {exc}") from None
 
     def _mint(self, token: str | None = None, chip_id: str | None = None) -> dict:
         """Create a Libby session ("chip"), or refresh one when given its token and id."""
@@ -177,7 +226,7 @@ class LibbyClient:
         key = match.group(1) if match else key
         if not re.fullmatch(r"[a-z0-9-]+", key):
             raise LibbyError("That doesn't look like a Libby library name. It's the word after libbyapp.com/library/.")
-        res = self.http.request("GET", f"{LIBRARIES_API}/{key}", headers=HEADERS, timeout=30)
+        res = self._send("GET", f"{LIBRARIES_API}/{key}", headers=HEADERS)
         if res.status_code == 404:
             raise LibbyError(f"Libby doesn't know a library called “{key}”. It's the word after libbyapp.com/library/ "
                              "when you open your library in a browser.")
@@ -249,7 +298,7 @@ class LibbyClient:
             location = res.headers.get("Location")
             if not location:
                 raise LibbyError("Libby sent a redirect without a download link.")
-            res = self.http.request("GET", location, headers={"User-Agent": HEADERS["User-Agent"]}, timeout=120)
+            res = self._send("GET", location, headers={"User-Agent": HEADERS["User-Agent"]})
             if res.status_code >= 400:
                 raise LibbyError(f"Downloading the book from OverDrive failed ({res.status_code}).")
         return res.content

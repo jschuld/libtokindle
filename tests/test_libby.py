@@ -422,3 +422,65 @@ def test_config_defaults():
     c = Config.from_env({})
     assert c.libby_poll_minutes == 30 and c.libby_auto_borrow is True
     assert Config.from_env({"LIBBY_POLL_MINUTES": "1"}).libby_poll_minutes == 15
+
+
+# --- Network and certificate problems
+
+MISMATCH = ("HTTPSConnectionPool(host='sentry-read.svc.overdrive.com', port=443): Max retries exceeded "
+            "(Caused by SSLError(SSLCertVerificationError(1, \"[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify "
+            "failed: Hostname mismatch, certificate is not valid for 'sentry-read.svc.overdrive.com'. (_ssl.c:1007)\")))")
+
+
+class Failing:
+    """An HTTP session whose requests to Libby's API host fail; others go to `fallback`."""
+
+    def __init__(self, error, fallback):
+        self.error, self.fallback, self.api_calls = error, fallback, 0
+
+    def request(self, method, url, **kwargs):
+        if url.startswith(libby.API + "/"):
+            self.api_calls += 1
+            raise self.error
+        return self.fallback.request(method, url, **kwargs)
+
+
+def test_edge_certificate_mismatch_falls_back_to_edge_session(lcfg, fake, caplog):
+    """The exact error from the user's log: the edge session takes over for Libby's API."""
+    import requests
+
+    broken = Failing(requests.exceptions.SSLError(MISMATCH), fake)
+    client = LibbyClient(lcfg.libby_file, http=broken)
+    edges = []
+    client._edge_factory = lambda: edges.append(1) or fake
+    client.connect(fake.card_number, fake.pin)
+    assert broken.api_calls == 1 and edges == [1]  # detected once, then the edge session is used
+    assert client.sync()["cards"]
+    assert caplog.text.count("OverDrive's edge network") == 1
+
+
+def test_other_certificate_errors_are_not_bypassed(lcfg, fake):
+    import requests
+
+    error = requests.exceptions.SSLError("[SSL: CERTIFICATE_VERIFY_FAILED] unable to get local issuer certificate")
+    client = LibbyClient(lcfg.libby_file, http=Failing(error, fake))
+    client._edge_factory = lambda: pytest.fail("must not fall back for a certificate that isn't trusted")
+    with pytest.raises(LibbyError, match="secure connection"):
+        client.connect(fake.card_number, fake.pin)
+
+
+def test_network_errors_become_readable(lcfg, fake):
+    import requests
+
+    client = LibbyClient(lcfg.libby_file, http=Failing(requests.exceptions.ConnectionError("Name or service not known"), fake))
+    with pytest.raises(LibbyError, match="Couldn't reach Libby"):
+        client.connect(fake.card_number, fake.pin)
+
+
+def test_connect_endpoint_reports_network_error_instead_of_crashing(api, fake, monkeypatch):
+    import requests
+
+    broken = Failing(requests.exceptions.ConnectionError("timed out"), fake)
+    monkeypatch.setattr(main, "LibbyClient", lambda path, http=None: LibbyClient(path, http=broken))
+    res = api.post("/api/libby/connect", headers=AUTH, json={"card_number": fake.card_number, "pin": fake.pin})
+    assert res.status_code == 400
+    assert "Couldn't reach Libby" in res.json()["detail"]

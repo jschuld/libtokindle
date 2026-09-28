@@ -103,6 +103,15 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
     → `code` → new anonymous chip (the secondary) → `POST chip/clone/code {"code",
     "role": "secondary"}` → re-mint `POST chip?c=…&s=0&v=<secondary chip[:8]>` with the
     secondary's token → save `{identity, chip, library, linked}` (never the PIN).
+  - **TLS quirk (seen by the user in NZ):** `sentry-read.svc.overdrive.com` can present
+    an OverDrive edge certificate for `*.odrsre.overdrive.com`, so requests fails with
+    "Hostname mismatch". `LibbyClient._send` then switches Libby API calls to an
+    `EdgeAdapter` session that still verifies the chain but checks the name
+    `sentry-read.odrsre.overdrive.com`. Any other TLS error is refused, never bypassed
+    (libby-archiver disables verification entirely; don't do that). Verified locally with
+    test certificates (edge name accepted; other names and untrusted issuers refused).
+  - Network and TLS failures are turned into `LibbyError` ("Couldn't reach Libby…"), so
+    endpoints return 400 with a message instead of a 500 traceback.
   - A 401 or `missing_chip` later → re-mint with the saved identity and chip id, then retry once.
   - `GET chip/sync` returns `cards`, `loans` and `holds`. A ready hold has `isAvailable: true`.
     Type is in `type.id` (`ebook`, `audiobook`, `magazine`), formats in `formats[].id`.
@@ -137,7 +146,7 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
 
 ```sh
 pip install -r requirements-dev.txt
-python -m pytest -q            # currently 87 tests
+python -m pytest -q            # currently 92 tests
 UPLOAD_TOKEN=dev uvicorn app.main:app --reload
 ```
 
