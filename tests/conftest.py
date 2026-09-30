@@ -12,6 +12,7 @@ for name, default in {
     "GOOGLE_SERVICE_ACCOUNT_FILE": "google-service-account.json",
     "DRIVE_STATE_FILE": "drive-state.json",
     "LIBBY_FILE": "libby.json",
+    "BOOKS_DIR": "books",
     "LIBBY_STATE_FILE": "libby-state.json",
 }.items():
     os.environ.setdefault(name, os.path.join(_config, default))

@@ -4,14 +4,15 @@ import hmac
 import logging
 import threading
 import time
+from urllib.parse import quote
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import logs, mailer, pipeline, settings
+from . import books, logs, mailer, pipeline, settings
 from .config import Config
 from .drive import DriveWatcher
 from .jobs import JobStore
@@ -76,6 +77,7 @@ def housekeeping(stop: threading.Event) -> None:
             if time.time() - last_prune >= HOUSEKEEPING_SECONDS:
                 logs.prune(cfg.log_dir, cfg.retention_days)
                 store.prune()
+                books.prune(cfg.books_dir, cfg.retention_days)
                 last_prune = time.time()
         except Exception:
             log.exception("Housekeeping failed")
@@ -114,6 +116,11 @@ def index() -> FileResponse:
 @app.get("/settings", include_in_schema=False)
 def settings_page() -> FileResponse:
     return FileResponse(STATIC / "settings.html")
+
+
+@app.get("/downloads", include_in_schema=False)
+def downloads_page() -> FileResponse:
+    return FileResponse(STATIC / "downloads.html")
 
 
 @app.get("/logs", include_in_schema=False)
@@ -316,4 +323,43 @@ def libby_send(background: BackgroundTasks, key: str = Body(embed=True)) -> dict
     if not any(loan["key"] == key for loan in watcher_.loans()):
         raise HTTPException(status_code=404, detail="That loan isn't in your Libby account any more. Refresh the page.")
     background.add_task(watcher_.send_by_key, key)
+    return {"ok": True}
+
+
+# --- Downloads: converted books kept on the server
+
+@app.get("/api/books", dependencies=[Depends(require_token)])
+def list_books() -> dict:
+    return {"retention_days": cfg.retention_days, "books": books.list_books(cfg.books_dir, cfg.retention_days)}
+
+
+@app.post("/api/books/link", dependencies=[Depends(require_token)])
+def book_link(name: str = Body(embed=True)) -> dict:
+    """A short-lived link a plain browser download can use (it can't send the token header)."""
+    try:
+        books.path_for(cfg.books_dir, name)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="That book isn't here any more.") from None
+    expires, signature = books.sign(cfg.upload_token, name)
+    return {"url": f"/download/{quote(name)}?expires={expires}&signature={signature}"}
+
+
+@app.get("/download/{name}", include_in_schema=False)
+def download_book(name: str, expires: int = Query(0), signature: str = Query("")) -> FileResponse:
+    if not books.verify(cfg.upload_token, name, expires, signature):
+        raise HTTPException(status_code=403, detail="This download link has expired. Open the Downloads page again.")
+    try:
+        path = books.path_for(cfg.books_dir, name)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="That book isn't here any more.") from None
+    return FileResponse(path, filename=path.name, media_type=mailer.mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+
+
+@app.delete("/api/books/{name}", dependencies=[Depends(require_token)])
+def delete_book(name: str) -> dict:
+    try:
+        books.delete(cfg.books_dir, name)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="That book isn't here any more.") from None
+    log.info("Deleted kept book %s", name)
     return {"ok": True}

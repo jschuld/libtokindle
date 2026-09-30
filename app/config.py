@@ -53,6 +53,7 @@ class Config:
     log_dir: Path
     history_file: Path
     retention_days: int
+    books_dir: Path
     libby_file: Path
     libby_state_file: Path
     libby_poll_minutes: int
@@ -110,6 +111,8 @@ class Config:
             history_file=Path(env.get("HISTORY_FILE", "/config/history.json")),
             # How long logs and the book history are kept: 1 to 30 days.
             retention_days=min(MAX_RETENTION_DAYS, max(1, int(env.get("LOG_RETENTION_DAYS") or MAX_RETENTION_DAYS))),
+            # Converted books for the Downloads page, kept for the retention period.
+            books_dir=Path(env.get("BOOKS_DIR", "/config/books")),
             # Libby: the linked account (written by the Settings page) and what's been handled.
             libby_file=Path(env.get("LIBBY_FILE", "/config/libby.json")),
             libby_state_file=Path(env.get("LIBBY_STATE_FILE", "/config/libby-state.json")),

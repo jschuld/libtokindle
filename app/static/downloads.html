@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Downloads · Library to Kindle</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  li.book { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+  li.book .actions { display: flex; gap: 8px; flex-shrink: 0; }
+  .name { word-break: break-word; }
+</style>
+</head>
+<body>
+<main>
+  <div class="top"><h1>Downloads</h1><span class="nav"><a href="/logs">Logs</a> <a href="/">← Back</a></span></div>
+  <p class="sub" id="retention">Books sent to your Kindle, kept on the server.</p>
+
+  <div class="card" id="login" hidden>
+    <label for="token">Access token</label>
+    <input type="password" id="token" autocomplete="current-password">
+    <button id="login-btn">Continue</button>
+    <p id="login-status" class="err"></p>
+  </div>
+
+  <div class="card" id="content" hidden>
+    <ul id="books" style="margin:0"></ul>
+    <p class="muted" id="empty" hidden>No books yet. Every book sent to your Kindle is kept here too.</p>
+    <p id="status"></p>
+  </div>
+</main>
+<script src="/static/common.js"></script>
+<script>
+onUnauthorized = () => {
+  $("login").hidden = false; $("content").hidden = true;
+  $("login-status").textContent = getToken() ? "Wrong access token." : "";
+};
+
+function size(bytes) {
+  return bytes >= 1048576 ? (bytes / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(bytes / 1024)) + " KB";
+}
+
+function setStatus(cls, text) { $("status").className = cls; $("status").textContent = text; }
+
+async function download(name, btn) {
+  btn.disabled = true;
+  try {
+    const { url } = await api("/api/books/link", { method: "POST", json: { name } });
+    location.href = url;
+  } catch (e) {
+    if (e.message !== "unauthorised") setStatus("err", "❌ " + e.message);
+  } finally {
+    setTimeout(() => { btn.disabled = false; }, 1500);
+  }
+}
+
+async function remove(name) {
+  if (!confirm("Delete “" + name + "” from the server? It stays on your Kindle.")) return;
+  try {
+    await api("/api/books/" + encodeURIComponent(name), { method: "DELETE" });
+    load();
+  } catch (e) {
+    if (e.message !== "unauthorised") setStatus("err", "❌ " + e.message);
+  }
+}
+
+async function load() {
+  const res = await api("/api/books");
+  $("login").hidden = true; $("content").hidden = false;
+  $("retention").textContent = `Books sent to your Kindle, kept on the server for ${res.retention_days} days (change in Settings).`;
+  const list = $("books"); list.innerHTML = "";
+  $("empty").hidden = res.books.length > 0;
+  for (const book of res.books) {
+    const li = document.createElement("li");
+    li.className = "book";
+    const text = document.createElement("div");
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = book.name.replace(/\.[^.]+$/, "");
+    const meta = document.createElement("div");
+    meta.className = "muted";
+    const deleted = new Date(book.deleted_after * 1000).toLocaleDateString();
+    meta.textContent = `${book.name.split(".").pop().toUpperCase()} · ${size(book.size)} · kept until ${deleted}`;
+    text.append(name, meta);
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    const get = document.createElement("button");
+    get.className = "secondary small"; get.textContent = "Download";
+    get.addEventListener("click", () => download(book.name, get));
+    const del = document.createElement("button");
+    del.className = "link small"; del.textContent = "Delete"; del.style.margin = "0";
+    del.setAttribute("aria-label", "Delete " + book.name);
+    del.addEventListener("click", () => remove(book.name));
+    actions.append(get, del);
+    li.append(text, actions);
+    list.appendChild(li);
+  }
+}
+
+$("login-btn").addEventListener("click", () => { setToken($("token").value.trim()); load().catch(() => {}); });
+$("token").addEventListener("keydown", (e) => { if (e.key === "Enter") $("login-btn").click(); });
+load().catch(() => {});
+</script>
+</body>
+</html>

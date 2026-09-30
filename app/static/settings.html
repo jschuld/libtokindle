@@ -17,7 +17,7 @@
 </head>
 <body>
 <main>
-  <div class="top"><h1>Settings</h1><span class="nav"><a href="/logs">Logs</a> <a href="/">← Back</a></span></div>
+  <div class="top"><h1>Settings</h1><span class="nav"><a href="/downloads">Downloads</a> <a href="/logs">Logs</a> <a href="/">← Back</a></span></div>
   <p class="sub">Changes take effect as soon as you save. There's no need to restart anything.</p>
 
   <div class="card" id="login" hidden>
@@ -129,8 +129,8 @@
     </section>
 
     <section class="card">
-      <h2>Logs and history</h2>
-      <p class="muted">Kept in the server's config folder and deleted automatically after this many days. <a href="/logs">View logs and history</a></p>
+      <h2>Logs, history and downloads</h2>
+      <p class="muted">Logs, the book history and the books on the Downloads page are kept in the server's config folder and deleted automatically after this many days. <a href="/logs">View logs and history</a></p>
       <label for="LOG_RETENTION_DAYS">Keep for (days) <span class="hint">1 to 30</span></label>
       <input type="number" id="LOG_RETENTION_DAYS" min="1" max="30" placeholder="30">
     </section>

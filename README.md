@@ -27,7 +27,9 @@ hold becomes ready, the service borrows it and sends it to your Kindle, and any 
 loan is sent too. See [Connect Libby](#optional-connect-libby).
 
 Every way, you get an email at your Gmail address saying whether it worked (✅) or
-failed (❌), with the reason.
+failed (❌), with the reason. The ✅ email has the converted book attached (unless it's
+over about 18 MB, which Gmail won't take), and every sent book is also kept on the
+**Downloads** page (see below).
 
 Each `.acsm` file can be used only once, and it expires after a while. If the upload
 fails with a download error, download the `.acsm` again from Libby.
@@ -91,6 +93,17 @@ Both are stored in `./config` on the server (`logs/` and `history.json`) and del
 automatically after 30 days. You can shorten that under **Settings → Logs and history**,
 anywhere from 1 to 30 days. `docker compose logs -f` shows the same log live, plus a
 line for every web request.
+
+## Downloads
+
+Every book sent to your Kindle is also kept on the server, in `./config/books`, and listed
+on the **Downloads** page (link at the top of the main page). Tap **Download** to save the
+EPUB to your phone, or **Delete** to remove it from the server (it stays on your Kindle).
+If the email to your Kindle fails, the converted book is still kept here.
+
+Books are deleted automatically after the same period as the logs: 30 days, or less if you
+change **Settings → Logs, history and downloads**. Download links on the page are signed
+and expire after 10 minutes, so the files aren't reachable without your access token.
 
 ## Optional: connect Libby
 

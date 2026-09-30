@@ -56,8 +56,18 @@ def sent(monkeypatch):
 
 @pytest.fixture
 def notices(monkeypatch):
-    messages = []
-    monkeypatch.setattr(pipeline.mailer, "send_notification", lambda cfg, subject, body: messages.append((subject, body)))
+    class Notices(list):
+        """(subject, body) per email; .attachments has each email's attached file name or None."""
+        attachments: list
+
+    messages = Notices()
+    messages.attachments = []
+
+    def send(cfg, subject, body, attachment=None):
+        messages.append((subject, body))
+        messages.attachments.append(attachment.name if attachment else None)
+
+    monkeypatch.setattr(pipeline.mailer, "send_notification", send)
     return messages
 
 
@@ -104,6 +114,7 @@ def cfg(tmp_path, sent, notices):
         notify_email="me@gmail.com",
         drive_folder_id="",
         drive_state_file=tmp_path / "drive-state.json",
+        books_dir=tmp_path / "books",
     )
 
 

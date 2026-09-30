@@ -142,4 +142,5 @@ and a file over 50 MB.
 - [x] Persistent log files (`/config/logs`, daily) and book history (`/config/history.json`), deleted after 1–30 days (default 30); Logs page (`/logs`)
 - [x] Libby integration (`app/libby.py`): signs in once with the library card number + PIN (PIN not stored; the setup-code flow was dropped because current Libby makes the new device show the code), checks every 30 min, auto-borrows ready ebook holds, sends new ebook loans through the existing .acsm pipeline; loans present at connect are skipped (Send to Kindle button for those)
 - [ ] First real Libby run on the home server (the Libby API can't be reached from the dev environment)
+- [x] Keep every sent book in `/config/books` for the retention period (≤ 30 days), with a Downloads page (signed 10-minute links) and the book attached to the ✅ result email (≤ 18 MB). Uploading to Google Drive was dropped: a service account has no Drive storage quota, and the alternatives (OAuth, Apps Script) were too much setup
 - [x] First real run: build the image, activate, and send one Auckland Libraries loan (milestone 1)

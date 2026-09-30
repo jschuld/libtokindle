@@ -11,11 +11,14 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree
 
-from . import mailer
+from . import books, mailer
 from .config import Config
 from .jobs import Job, JobStore
 
 log = logging.getLogger(__name__)
+
+# Gmail refuses emails over 25 MB (attachments grow by a third when encoded).
+MAX_RESULT_ATTACHMENT_BYTES = 18 * 1024 * 1024
 
 MAX_ACSM_BYTES = 256 * 1024
 
@@ -76,6 +79,12 @@ def process(cfg: Config, store: JobStore, job: Job, data: bytes) -> None:
             title = Path(job.filename).stem
         book = book.rename(book.parent / nice_filename(title, author, book.suffix))
         store.update(job, title=title)
+        # Keep a copy for the Downloads page and the result email, even if emailing the
+        # Kindle fails below.
+        try:
+            store.update(job, book=books.save(cfg.books_dir, book))
+        except OSError as exc:
+            log.warning("Couldn't keep a copy of %s in %s: %s", book.name, cfg.books_dir, exc)
 
         if book.stat().st_size > cfg.max_attachment_bytes:
             raise PipelineError(f"The book is {book.stat().st_size // (1024 * 1024)} MB, too big to email to a Kindle.")
@@ -113,17 +122,33 @@ def notify(cfg: Config, job: Job) -> None:
         return
     name = job.title or job.filename
     via = {"drive": "Google Drive", "libby": "Libby"}.get(job.source, "the web page")
+    attachment = None
     if job.status == "done":
         subject = f"✅ Sent to Kindle: {name}"
         body = f"“{name}” was sent to {cfg.kindle_email}. It should appear on your Kindle in a few minutes.\n\nFile: {job.filename} (from {via})"
+        attachment, note = _result_attachment(cfg, job)
+        body += note
     else:
         subject = f"❌ Not sent to Kindle: {name}"
         body = f"“{job.filename}” (from {via}) could not be sent to your Kindle.\n\n{job.error}"
+        if job.book:
+            body += "\n\nThe converted book is on the Downloads page."
     try:
-        mailer.send_notification(cfg, subject, body)
+        mailer.send_notification(cfg, subject, body, attachment=attachment)
         log.info("Result email sent to %s", cfg.notify_email)
     except Exception:
         log.exception("couldn't send notification for job %s", job.id)
+
+
+def _result_attachment(cfg: Config, job: Job) -> tuple[Path | None, str]:
+    """The kept book to attach to the result email, and a note for the email body."""
+    try:
+        path = books.path_for(cfg.books_dir, job.book or "")
+    except FileNotFoundError:
+        return None, ""
+    if path.stat().st_size > MAX_RESULT_ATTACHMENT_BYTES:
+        return None, "\n\nThe book is too big to attach here; download it from the Downloads page."
+    return path, "\n\nThe book is attached, and also on the Downloads page."
 
 
 def _run(cfg: Config, args: list[str], step: str) -> None:

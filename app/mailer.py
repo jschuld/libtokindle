@@ -40,10 +40,14 @@ def send_to_kindle(cfg: Config, book: Path) -> None:
     _send(cfg, msg)
 
 
-def send_notification(cfg: Config, subject: str, body: str) -> None:
+def send_notification(cfg: Config, subject: str, body: str, attachment: Path | None = None) -> None:
     msg = EmailMessage()
     msg["From"] = cfg.smtp_from
     msg["To"] = cfg.notify_email
     msg["Subject"] = subject
     msg.set_content(body)
+    if attachment:
+        mime = mimetypes.guess_type(attachment.name)[0] or "application/octet-stream"
+        maintype, subtype = mime.split("/", 1)
+        msg.add_attachment(attachment.read_bytes(), maintype=maintype, subtype=subtype, filename=attachment.name)
     _send(cfg, msg)

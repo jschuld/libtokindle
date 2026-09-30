@@ -29,6 +29,7 @@ class Job:
     status: str = "queued"  # queued | fulfilling | removing_drm | sending | done | failed
     title: str | None = None
     error: str | None = None
+    book: str | None = None  # file name in the books folder, once converted
     created: float = field(default_factory=time.time)
     updated: float = field(default_factory=time.time)
 

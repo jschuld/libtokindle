@@ -44,10 +44,12 @@ app/
   libby.py      LibbyClient (unofficial Libby API: sign in with card + PIN, sync, borrow,
                 open + fulfill a loan) and LibbyWatcher (polls, auto-borrows ready ebook
                 holds, sends new ebook loans through pipeline.process, rate-limit backoff)
+  books.py      converted books kept in /config/books: save, list, delete, age prune,
+                signed short-lived download links (HMAC with the access token)
   jobs.py       JobStore: book history, persisted to /config/history.json, trimmed by retention
   logs.py       daily TimedRotatingFileHandler in /config/logs, age-based prune(), read()
   mailer.py     SMTP (STARTTLS on 587, SSL on 465): send_to_kindle(), send_notification()
-  static/       index.html (upload), settings.html, logs.html, common.js (api(), token in
+  static/       index.html (upload), settings.html, logs.html, downloads.html, common.js (api(), token in
                 localStorage), style.css (light and dark)
 tests/          pytest; conftest.py points every /config path at a temp dir
 Dockerfile      FROM bcliang/docker-libgourou:0.8.9-ubuntu, plus a Python venv
@@ -67,6 +69,7 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
 | `libby.json` | Libby identity token (mode 600). Its presence means "connected" |
 | `libby-state.json` | `{"seen": [loan keys], "hold_failures": [hold keys], "outcomes": {loan key: {"status", "at"}}}`. Key = `cardId:titleId:checkoutDate` (or `placedDate` for holds). Status: skipped (had it at connect), sending, sent, failed, not_ebook; loans seen by older versions have no outcome and show as "earlier" |
 | `logs/libtokindle.log[.YYYY-MM-DD]` | Daily logs |
+| `books/` | Every converted book (`Title - Author.epub`), for the Downloads page and the result-email attachment; pruned after the retention period |
 
 ## libgourou facts (learned the hard way)
 
@@ -138,6 +141,22 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
   sentry-read.svc.overdrive.com. Whether fulfilling `ebook-epub-adobe` locks the loan's
   format in the Libby app is unverified.
 
+## Books and downloads
+
+- `pipeline.process` saves a copy right after conversion (before emailing the Kindle, so
+  it's kept even if that email fails) and sets `job.book`. `notify()` attaches it to the
+  ✅ email when it's ≤ `MAX_RESULT_ATTACHMENT_BYTES` (18 MB); otherwise the email points
+  to the Downloads page.
+- Safari can't send the access token header on a plain link, so `POST /api/books/link`
+  returns `/download/{name}?expires&signature` (HMAC-SHA256 of name and expiry keyed with
+  `UPLOAD_TOKEN`, valid 10 minutes). `books.path_for` accepts only plain, existing book
+  names (no paths, no dotfiles).
+- The user asked for books in a Google Drive `epub` subfolder first. That was dropped
+  because **service accounts can't upload to a personal Drive** (no storage quota; shared
+  drives need Workspace). The only options were OAuth user consent (a published consent
+  screen, or refresh tokens expire after 7 days) or an Apps Script web app. The user chose
+  local storage plus the email attachment instead.
+
 ## Google Drive facts
 
 - The folder must be shared with the service account's `client_email` as Viewer, and the
@@ -152,7 +171,7 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
 
 ```sh
 pip install -r requirements-dev.txt
-python -m pytest -q            # currently 99 tests
+python -m pytest -q            # currently 111 tests
 UPLOAD_TOKEN=dev uvicorn app.main:app --reload
 ```
 
@@ -163,7 +182,7 @@ UPLOAD_TOKEN=dev uvicorn app.main:app --reload
   small Python scripts) and fake Drive and SMTP. Make the fakes reject what the real
   tools reject: the `-o`/`-O` bug slipped through because the fake accepted it.
 - Never let tests write to the real `/config`. `tests/conftest.py` sets `SETTINGS_FILE`,
-  `HISTORY_FILE`, `LOG_DIR`, `ADEPT_DIR`, `GOOGLE_SERVICE_ACCOUNT_FILE` and
+  `HISTORY_FILE`, `LOG_DIR`, `ADEPT_DIR`, `BOOKS_DIR`, the Libby files, `GOOGLE_SERVICE_ACCOUNT_FILE` and
   `DRIVE_STATE_FILE` to a temp dir before `app.main` is imported.
 - `ADEPT_ACTIVATE`, `ACSMDOWNLOADER` and `ADEPT_REMOVE` env vars override the tool paths,
   which the tests use.
@@ -195,5 +214,6 @@ UPLOAD_TOKEN=dev uvicorn app.main:app --reload
   Settings changes log only the key names.
 - After each change: run the tests, update README.md (user-facing) and PLAN.md
   (status/decisions) when behaviour changes, commit with a descriptive message, and push.
-- Legal note: this is for the user's own loans. It keeps no copies of books (working
-  files are deleted unless `KEEP_FILES=true`).
+- Legal note: this is for the user's own loans. Converted books are kept only for the
+  retention period (at most 30 days, the length of a loan) on the Downloads page, and
+  working files are deleted unless `KEEP_FILES=true`.
