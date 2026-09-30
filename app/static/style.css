@@ -49,3 +49,8 @@ code { font-size: 14px; word-break: break-all; }
 .problems { margin: 0 0 16px; padding: 12px 16px; border-radius: 12px; border: 1px solid var(--err); color: var(--err); font-size: 15px; }
 .problems:empty { display: none; }
 .save-bar { position: sticky; bottom: 0; padding: 16px 0; background: var(--bg); }
+label.check { display: flex; gap: 10px; align-items: center; font-weight: 400; margin: 6px 0 14px; }
+label.check input { width: 20px; height: 20px; }
+li.loan { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+button.small { width: auto; padding: 8px 12px; font-size: 14px; white-space: nowrap; }
+#libby-loans-box { margin-top: 12px; }

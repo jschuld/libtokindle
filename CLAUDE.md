@@ -1,8 +1,9 @@
 # libtokindle
 
 Self-hosted service that sends Auckland Libraries (Libby/OverDrive) ebook loans to a
-Kindle. Upload a loan's `.acsm` file, or drop it (or an EPUB/PDF) in a watched Google
-Drive folder. The service downloads the book with libgourou, strips the Adobe ADEPT DRM,
+Kindle. Upload a loan's `.acsm` file, drop it (or an EPUB/PDF) in a watched Google
+Drive folder, or let it watch the Libby account (auto-borrows ready holds and sends new
+ebook loans). The service downloads the book with libgourou, strips the Adobe ADEPT DRM,
 emails the EPUB to the Kindle's Send to Kindle address, and emails a ✅/❌ result to the
 user's Gmail. `README.md` is the user guide; `PLAN.md` holds the original design and the
 decision log.
@@ -18,6 +19,8 @@ decision log.
   approved sender list.
 - Wants no file editing on the server: everything is configured on the `/settings` page.
 - Logs and history must be kept **at most 30 days** (a hard cap in code).
+- Libby: **auto-borrow ready holds: yes**; **skip loans that exist when connecting**;
+  **check every 30 minutes**.
 - Updates on the server with `git pull && docker compose up -d --build`.
 - Work on the branch the session names (so far `claude/drm-removal-kindle-workflow-fxqaly`),
   commit, and push. No PRs unless asked.
@@ -38,6 +41,9 @@ app/
                 the result email and never raises
   drive.py      DriveWatcher: polls one folder with a service account (drive.readonly)
                 through the Drive v3 REST API and google-auth AuthorizedSession
+  libby.py      LibbyClient (unofficial Libby API: sign in with card + PIN, sync, borrow,
+                open + fulfill a loan) and LibbyWatcher (polls, auto-borrows ready ebook
+                holds, sends new ebook loans through pipeline.process, rate-limit backoff)
   jobs.py       JobStore: book history, persisted to /config/history.json, trimmed by retention
   logs.py       daily TimedRotatingFileHandler in /config/logs, age-based prune(), read()
   mailer.py     SMTP (STARTTLS on 587, SSL on 465): send_to_kindle(), send_notification()
@@ -57,7 +63,9 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
 | `settings.json` | Values saved on the Settings page, keyed by env var name; they override `.env` |
 | `google-service-account.json` | Drive service account key |
 | `drive-state.json` | `{"folder", "since", "seen": [ids]}`. Files created before `since` are skipped |
-| `history.json` | Book history (list of Job dicts) |
+| `history.json` | Book history (list of Job dicts; `source` is upload, drive or libby) |
+| `libby.json` | Libby identity token (mode 600). Its presence means "connected" |
+| `libby-state.json` | `{"seen": [loan keys], "hold_failures": [hold keys], "outcomes": {loan key: {"status", "at"}}}`. Key = `cardId:titleId:checkoutDate` (or `placedDate` for holds). Status: skipped (had it at connect), sending, sent, failed, not_ebook; loans seen by older versions have no outcome and show as "earlier" |
 | `logs/libtokindle.log[.YYYY-MM-DD]` | Daily logs |
 
 ## libgourou facts (learned the hard way)
@@ -77,6 +85,59 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
   again from Libby".
 - An EPUB is DRM-protected if it contains `META-INF/rights.xml`.
 
+## Libby facts
+
+- There's no official API. Base URL `https://sentry-read.svc.overdrive.com`, JSON, with the
+  header `Authorization: Bearer <identity>`.
+  - **Linking uses the library card number + PIN** (the user's choice; this is how
+    libby-archiver does it). The Libby "Copy To Another Device" setup-code flow does NOT
+    work: the current Libby app makes the *new* device display a code for the phone to
+    enter, so the old "phone shows a code" flow (odmpy's) is gone. The first version was
+    built that way and failed for the user.
+  - Sign-in steps: `GET https://thunder.api.overdrive.com/v2/libraries/{key}` → `websiteId`
+    (key default `aucklandlibraries`, not yet confirmed against the real API) →
+    `POST chip?c=d:22.1.1&s=0` (anonymous, the primary) →
+    `GET auth/forms/{websiteId}` → pick `ilsName` (the one equal to the key, else the
+    first) → `POST auth/link/{websiteId} {"ils", "username": card, "password": pin}`
+    (`credentials_rejected` means a wrong card or PIN) → `GET chip/clone/code?role=primary`
+    → `code` → new anonymous chip (the secondary) → `POST chip/clone/code {"code",
+    "role": "secondary"}` → re-mint `POST chip?c=…&s=0&v=<secondary chip[:8]>` with the
+    secondary's token → save `{identity, chip, library, linked}` (never the PIN).
+  - **TLS quirk (seen by the user in NZ):** `sentry-read.svc.overdrive.com` can present
+    an OverDrive edge certificate for `*.odrsre.overdrive.com`, so requests fails with
+    "Hostname mismatch". `LibbyClient._send` then switches Libby API calls to an
+    `EdgeAdapter` session that still verifies the chain but checks the name
+    `sentry-read.odrsre.overdrive.com`. Any other TLS error is refused, never bypassed
+    (libby-archiver disables verification entirely; don't do that). Verified locally with
+    test certificates (edge name accepted; other names and untrusted issuers refused).
+  - Network and TLS failures are turned into `LibbyError` ("Couldn't reach Libby…"), so
+    endpoints return 400 with a message instead of a 500 traceback.
+  - A 401 or `missing_chip` later → re-mint with the saved identity and chip id, then retry once.
+  - `GET chip/sync` returns `cards`, `loans` and `holds`. A ready hold has `isAvailable: true`.
+    Type is in `type.id` (`ebook`, `audiobook`, `magazine`), formats in `formats[].id`.
+  - Borrow: `POST card/{cardId}/loan/{titleId}` with
+    `{"period": N, "units": "days", "lucky_day": null, "title_format": "ebook"}`. N comes
+    from `card.lendingPeriods[type or "book"].preference[0]`, else the last `options`
+    entry, else 21.
+  - Before fulfilling: `GET open/{type}/card/{cardId}/title/{titleId}` (failure only
+    logged). Fulfill: `GET card/{cardId}/loan/{titleId}/fulfill/{format}` →
+    `ebook-epub-adobe` returns the .acsm body, and `ebook-epub-open` returns a 302 to a
+    DRM-free file. Preference order: epub-open, epub-adobe, pdf-open, pdf-adobe.
+  - Rate limiting: `403 {"result": "whoa"}` or 429 → `LibbyRateLimited` → retry after the
+    normal interval (30 min), then 1 h, then at most 2 h; back to normal after a success.
+    Each rate limit logs "next check at HH:MM", and the status API/pages show `next_check`.
+  - **Watchdog** (`main.restart_libby_if_stuck`, run every 5 min by the housekeeping thread
+    and by "Check now"): if the watcher thread died, one check has run > 30 min, or a
+    check is > 5 min overdue, it logs the reason plus the thread's stack and starts a new
+    watcher. Added after the user saw no retry for 7 hours following a rate limit; the
+    root cause wasn't found (look for "Restarting the Libby watcher" in their logs).
+- References: odmpy (`ping/odmpy`, GPL, unmaintained) and ping's Libby calibre plugin.
+  Don't copy their code. libby-archiver (`JavaGT/libby-archiver`, Node, Sept 2026) was
+  evaluated and rejected as the core: too new, and it rebuilds EPUBs from the web reader.
+- Untested against real Libby: the dev environment's proxy blocks
+  sentry-read.svc.overdrive.com. Whether fulfilling `ebook-epub-adobe` locks the loan's
+  format in the Libby app is unverified.
+
 ## Google Drive facts
 
 - The folder must be shared with the service account's `client_email` as Viewer, and the
@@ -91,10 +152,13 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
 
 ```sh
 pip install -r requirements-dev.txt
-python -m pytest -q            # currently 63 tests
+python -m pytest -q            # currently 99 tests
 UPLOAD_TOKEN=dev uvicorn app.main:app --reload
 ```
 
+- `tests/test_libby.py` has a `FakeLibby` HTTP fake (chip, clone, sync, open, fulfill
+  with redirect, borrow, 401 expiry, `whoa` rate limit). Extend it when the Libby client
+  changes.
 - The tests use **fake libgourou tools** (`fake_tool()` in tests/test_pipeline.py writes
   small Python scripts) and fake Drive and SMTP. Make the fakes reject what the real
   tools reject: the `-o`/`-O` bug slipped through because the fake accepted it.
@@ -113,6 +177,7 @@ UPLOAD_TOKEN=dev uvicorn app.main:app --reload
 
 ## Limits of the cloud dev environment
 
+- `sentry-read.svc.overdrive.com` (Libby) is blocked by the proxy too.
 - There's **no Docker daemon**, `forge.soutade.fr` (libgourou source) is blocked, and
   Docker Hub is rate-limited, so the image can't be built or inspected here. The user
   builds and tests it on their PC. Say so plainly rather than claiming it's verified.
@@ -126,7 +191,7 @@ UPLOAD_TOKEN=dev uvicorn app.main:app --reload
 
 - Error messages shown to the user (web page, result email) say what to do next.
   `PipelineError`, `SettingsError` and `DriveError` carry those messages.
-- Secrets (`SMTP_PASSWORD`, `UPLOAD_TOKEN`) are never returned by the API or logged.
+- Secrets (`SMTP_PASSWORD`, `UPLOAD_TOKEN`, the Libby PIN) are never returned by the API or logged. The Libby PIN is not stored at all.
   Settings changes log only the key names.
 - After each change: run the tests, update README.md (user-facing) and PLAN.md
   (status/decisions) when behaviour changes, commit with a descriptive message, and push.

@@ -22,7 +22,11 @@ for the design.
 your watched Google Drive folder, and save. Within about a minute the service picks it up
 and sends it. EPUB and PDF files you put in that folder are sent as they are.
 
-Either way, you get an email at your Gmail address saying whether it worked (✅) or
+**Or automatically from Libby:** connect your Libby account on the Settings page. When a
+hold becomes ready, the service borrows it and sends it to your Kindle, and any new ebook
+loan is sent too. See [Connect Libby](#optional-connect-libby).
+
+Every way, you get an email at your Gmail address saying whether it worked (✅) or
 failed (❌), with the reason.
 
 Each `.acsm` file can be used only once, and it expires after a while. If the upload
@@ -87,6 +91,47 @@ Both are stored in `./config` on the server (`logs/` and `history.json`) and del
 automatically after 30 days. You can shorten that under **Settings → Logs and history**,
 anywhere from 1 to 30 days. `docker compose logs -f` shows the same log live, plus a
 line for every web request.
+
+## Optional: connect Libby
+
+The service can watch your Libby account. Every 30 minutes it checks for:
+- **Holds that are ready**: it borrows them straight away (you can turn this off), using
+  your library's usual loan length.
+- **New ebook loans**, including ones it just borrowed: it gets the book from Libby,
+  removes the DRM and sends it to your Kindle.
+
+Loans you already have when you connect are skipped. **Your Libby loans** on the main
+page shows what happened to each loan (sent, failed, or skipped because you already had
+it), with a **Send to Kindle** button to send one now. Audiobooks and magazines are
+ignored. A few titles can only be read in the Libby app or a browser; you get a ❌ email
+for those.
+
+To connect, go to the **Settings** page, find **Libby**, and enter:
+- **Library**: already filled in as `aucklandlibraries`. It's the word after
+  `libbyapp.com/library/` when you open your library in a browser. If connecting says
+  Libby doesn't know the library, check that word there.
+- Your **library card number** and **PIN**, the same ones you use on the library's website.
+
+Then tap **Connect Libby**. The server signs in once and keeps only Libby's session in
+`./config/libby.json`. The PIN is used for that sign-in only; it is never saved or
+logged. Loans and holds belong to your card, so the server sees the same ones as the Libby
+app on your phone. Your reading position and tags stay on the phone. **Disconnect**
+removes the session.
+
+(Libby's "Copy To Another Device" setup code isn't used: the current Libby app expects
+the *new* device to show a code, which a server can't do.)
+
+On some networks OverDrive's server shows a certificate for its edge network
+(`*.odrsre.overdrive.com`) instead of its own name. The service recognises that case and
+still checks the certificate fully; you'll see one warning about it in the log. Any other
+certificate problem is refused.
+
+Libby has no official API. This uses the same one the Libby app uses, so it could stop
+working if OverDrive changes it, and Libby limits how often it can be asked (checks are
+at most every 15 minutes). If Libby says it's getting too many requests, the service waits
+30 minutes, then an hour, then at most 2 hours between tries, and the main page shows when
+the next check is due. If the Libby check ever stops or hangs, it's restarted
+automatically within 5 minutes; **Check now** also restarts it.
 
 ## Optional: watch a Google Drive folder
 

@@ -81,7 +81,7 @@ async function loadHistory() {
     icon.textContent = STATUS[job.status] || "⏳";
     const what = document.createElement("td");
     const name = document.createElement("div");
-    name.textContent = (job.title || job.filename) + (job.source === "drive" ? " (Drive)" : "");
+    name.textContent = (job.title || job.filename) + ({ drive: " (Drive)", libby: " (Libby)" }[job.source] || "");
     const meta = document.createElement("div");
     meta.className = job.error ? "muted warn" : "muted";
     const when = new Date(job.created * 1000).toLocaleString();

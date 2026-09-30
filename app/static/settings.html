@@ -87,6 +87,31 @@
     </section>
 
     <section class="card">
+      <h2>Libby <span class="hint">(optional)</span></h2>
+      <p class="muted">Watches your Libby account. Ready holds are borrowed, and new ebook loans are sent to your Kindle. Loans you already have when you connect are skipped; send them from the main page if you want them. It signs in with your library card, so it sees the same loans and holds as the Libby app.</p>
+      <p id="libby-state"></p>
+      <div id="libby-connect" hidden>
+        <label for="libby-library">Library <span class="hint">the word after libbyapp.com/library/</span></label>
+        <input type="text" id="libby-library" value="aucklandlibraries" autocomplete="off" autocapitalize="none">
+        <label for="libby-card">Library card number</label>
+        <input type="text" id="libby-card" inputmode="numeric" autocomplete="off">
+        <label for="libby-pin">PIN <span class="hint">used once to sign in, never stored</span></label>
+        <input type="password" id="libby-pin" autocomplete="off">
+        <button class="secondary" id="libby-connect-btn">Connect Libby</button>
+      </div>
+      <div id="libby-connected" hidden>
+        <div class="row" style="margin-bottom:14px">
+          <button class="secondary" id="libby-check">Check now</button>
+          <button class="secondary" id="libby-disconnect">Disconnect</button>
+        </div>
+      </div>
+      <p id="libby-status" class="muted"></p>
+      <label class="check"><input type="checkbox" id="LIBBY_AUTO_BORROW"> Borrow holds as soon as they're ready</label>
+      <label for="LIBBY_POLL_MINUTES">Check every (minutes) <span class="hint">at least 15</span></label>
+      <input type="number" id="LIBBY_POLL_MINUTES" min="15" placeholder="30">
+    </section>
+
+    <section class="card">
       <h2>Adobe device</h2>
       <p class="muted">A one-time step that lets this server open library loans.</p>
       <p id="adobe-state"></p>
@@ -126,7 +151,8 @@
 <script src="/static/common.js"></script>
 <script>
 const FIELDS = ["KINDLE_EMAIL", "SMTP_USER", "SMTP_PASSWORD", "SMTP_HOST", "SMTP_PORT", "SMTP_FROM",
-                "NOTIFY_EMAIL", "DRIVE_FOLDER_ID", "DRIVE_POLL_SECONDS", "LOG_RETENTION_DAYS", "UPLOAD_TOKEN"];
+                "NOTIFY_EMAIL", "DRIVE_FOLDER_ID", "DRIVE_POLL_SECONDS", "LOG_RETENTION_DAYS",
+                "LIBBY_POLL_MINUTES", "LIBBY_AUTO_BORROW", "UPLOAD_TOKEN"];
 const SECRETS = ["SMTP_PASSWORD", "UPLOAD_TOKEN"];
 
 onUnauthorized = () => {
@@ -140,6 +166,8 @@ function render(s) {
     if (SECRETS.includes(name)) {
       $(name).value = "";
       $(name).placeholder = s.secrets_set[name] ? "Saved. Leave empty to keep it" : "";
+    } else if ($(name).type === "checkbox") {
+      $(name).checked = s.values[name] === "true";
     } else {
       $(name).value = s.values[name] || "";
     }
@@ -157,14 +185,41 @@ function render(s) {
   $("activate-box").hidden = s.adobe_activated;
 }
 
+function renderLibby(libby) {
+  $("libby-connect").hidden = libby.connected;
+  $("libby-connected").hidden = !libby.connected;
+  if (!libby.connected) {
+    $("libby-state").textContent = "Not connected.";
+    $("libby-state").className = "";
+    return;
+  }
+  const where = libby.libraries && libby.libraries.length ? " to " + libby.libraries.join(", ") : "";
+  $("libby-state").textContent = "✓ Connected" + where + ".";
+  $("libby-state").className = "done";
+  const status = $("libby-status");
+  const next = libby.checking ? " Checking now…"
+    : libby.next_check ? " Next check " + new Date(libby.next_check * 1000).toLocaleString() + "." : "";
+  if (libby.last_error) {
+    status.className = "err"; status.textContent = "Last check failed: " + libby.last_error + next;
+  } else {
+    status.className = "muted";
+    status.textContent = (libby.last_check ? "Last checked " + new Date(libby.last_check * 1000).toLocaleString() + "." : "Checking…") + next;
+  }
+}
+
+async function loadLibby() {
+  try { renderLibby((await api("/api/status")).libby); } catch {}
+}
+
 async function load() {
-  try { render(await api("/api/settings")); } catch {}
+  try { render(await api("/api/settings")); } catch { return; }
+  loadLibby();
 }
 
 async function save() {
   const changes = {};
   for (const name of FIELDS) {
-    const value = $(name).value.trim();
+    const value = $(name).type === "checkbox" ? String($(name).checked) : $(name).value.trim();
     if (SECRETS.includes(name) && !value) continue;
     changes[name] = value;
   }
@@ -221,6 +276,31 @@ $("activate").addEventListener("click", withStatus($("activate-status"), async (
   }
   return "Activated. Back up the config folder on the server.";
 }));
+
+$("libby-connect-btn").addEventListener("click", withStatus($("libby-status"), async () => {
+  $("libby-connect-btn").disabled = true;
+  try {
+    const res = await api("/api/libby/connect", { method: "POST", json: {
+      library: $("libby-library").value, card_number: $("libby-card").value, pin: $("libby-pin").value,
+    } });
+    $("libby-pin").value = "";
+    renderLibby(res.libby);
+  } finally {
+    $("libby-connect-btn").disabled = false;
+  }
+  return "Connected. The first check runs now.";
+}));
+
+$("libby-check").addEventListener("click", withStatus($("libby-status"), async () => {
+  await api("/api/libby/check", { method: "POST" });
+  setTimeout(loadLibby, 5000);
+  return "Checking Libby now…";
+}));
+
+$("libby-disconnect").addEventListener("click", async () => {
+  if (!confirm("Disconnect Libby? You can connect again later with your card number and PIN.")) return;
+  try { renderLibby((await api("/api/libby/disconnect", { method: "POST" })).libby); } catch {}
+});
 
 $("login-btn").addEventListener("click", () => { setToken($("token").value.trim()); load(); });
 $("token").addEventListener("keydown", (e) => { if (e.key === "Enter") $("login-btn").click(); });

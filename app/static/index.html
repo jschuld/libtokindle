@@ -38,6 +38,11 @@
     <input type="file" id="file" accept=".acsm,application/vnd.adobe.adept+xml">
     <div id="status"></div>
     <p id="drive" class="muted" hidden></p>
+    <p id="libby" class="muted" hidden></p>
+    <details id="libby-loans-box" hidden>
+      <summary>Your Libby loans</summary>
+      <ul id="libby-loans"></ul>
+    </details>
     <ul id="recent"></ul>
   </div>
 
@@ -69,7 +74,83 @@ async function showApp() {
   }
   renderRecent(status.recent);
   renderDrive(status.drive);
+  renderLibby(status.libby);
 }
+
+function renderLibby(libby) {
+  const el = $("libby");
+  el.hidden = !libby.connected;
+  $("libby-loans-box").hidden = !libby.connected;
+  if (!libby.connected) return;
+  const time = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const next = libby.checking ? " Checking now…" : libby.next_check ? " Next check " + time(libby.next_check) + "." : "";
+  if (libby.last_error) {
+    el.className = "err";
+    el.textContent = "Libby: last check failed: " + libby.last_error + next;
+  } else {
+    el.className = "muted";
+    const when = libby.last_check ? time(libby.last_check) : "not yet";
+    el.textContent = "Watching Libby" + (libby.auto_borrow ? " and borrowing ready holds" : "") + " (last checked " + when + ")." + next;
+  }
+}
+
+async function loadLibbyLoans() {
+  const list = $("libby-loans");
+  list.innerHTML = "<li class='muted'>Loading…</li>";
+  try {
+    const { loans } = await api("/api/libby/loans");
+    list.innerHTML = "";
+    if (!loans.length) list.innerHTML = "<li class='muted'>No loans right now.</li>";
+    for (const loan of loans) {
+      const li = document.createElement("li");
+      li.className = "loan";
+      const text = document.createElement("div");
+      text.textContent = loan.title + (loan.author ? " · " + loan.author : "");
+      const meta = document.createElement("div");
+      meta.className = "muted";
+      const when = loan.status_at ? " " + new Date(loan.status_at * 1000).toLocaleDateString() : "";
+      const STATUS = {
+        sent: "✅ Sent to your Kindle" + when,
+        failed: "❌ Sending failed" + when + ". See Logs, or try again",
+        sending: "⏳ Sending…",
+        skipped: "Not sent: you already had it when Libby was connected",
+        earlier: "Not sent automatically: you probably had it when Libby was connected",
+        new: "Not sent yet (the next check will send it)",
+      };
+      meta.textContent = !loan.sendable
+        ? (loan.type === "ebook" ? "Read in Libby only (no download)" : "Not an ebook")
+        : STATUS[loan.status] || loan.status;
+      text.appendChild(meta);
+      li.appendChild(text);
+      if (loan.sendable) {
+        const btn = document.createElement("button");
+        btn.className = "secondary small";
+        btn.textContent = loan.status === "sent" ? "Send again" : loan.status === "failed" ? "Try again" : "Send to Kindle";
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          try {
+            await api("/api/libby/send", { method: "POST", json: { key: loan.key } });
+            btn.textContent = "Sending…";
+            setStatus("", "⏳ Sending “" + loan.title + "”. You'll get an email with the result.");
+            setTimeout(() => api("/api/status").then((s) => renderRecent(s.recent)).catch(() => {}), 4000);
+          } catch (e) {
+            btn.disabled = false;
+            if (e.message !== "unauthorised") setStatus("err", "❌ " + e.message);
+          }
+        });
+        li.appendChild(btn);
+      }
+      list.appendChild(li);
+    }
+  } catch (e) {
+    list.innerHTML = "";
+    const li = document.createElement("li");
+    li.className = "err"; li.textContent = e.message;
+    list.appendChild(li);
+  }
+}
+
+$("libby-loans-box").addEventListener("toggle", () => { if ($("libby-loans-box").open) loadLibbyLoans(); });
 
 function renderDrive(drive) {
   const el = $("drive");
@@ -95,7 +176,7 @@ function renderRecent(jobs) {
     const li = document.createElement("li");
     const when = new Date(job.created * 1000).toLocaleString();
     const state = job.status === "done" ? "✅" : job.status === "failed" ? "❌" : "⏳";
-    li.textContent = `${state} ${job.title || job.filename}` + (job.source === "drive" ? " (Drive)" : "");
+    li.textContent = `${state} ${job.title || job.filename}` + ({ drive: " (Drive)", libby: " (Libby)" }[job.source] || "");
     const meta = document.createElement("div");
     meta.className = "muted";
     meta.textContent = job.error ? `${when} · ${job.error}` : when;
@@ -129,7 +210,7 @@ $("file").addEventListener("change", async () => {
     if (e.message !== "unauthorised") setStatus("err", "❌ " + e.message);
   } finally {
     $("pick").style.pointerEvents = ""; $("pick").style.opacity = "";
-    api("/api/status").then((s) => { renderRecent(s.recent); renderDrive(s.drive); }).catch(() => {});
+    api("/api/status").then((s) => { renderRecent(s.recent); renderDrive(s.drive); renderLibby(s.libby); }).catch(() => {});
   }
 });
 

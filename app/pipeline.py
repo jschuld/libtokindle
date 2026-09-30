@@ -112,7 +112,7 @@ def notify(cfg: Config, job: Job) -> None:
     if not cfg.notify_email:
         return
     name = job.title or job.filename
-    via = "Google Drive" if job.source == "drive" else "the web page"
+    via = {"drive": "Google Drive", "libby": "Libby"}.get(job.source, "the web page")
     if job.status == "done":
         subject = f"✅ Sent to Kindle: {name}"
         body = f"“{name}” was sent to {cfg.kindle_email}. It should appear on your Kindle in a few minutes.\n\nFile: {job.filename} (from {via})"

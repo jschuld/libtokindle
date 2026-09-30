@@ -26,6 +26,8 @@ EDITABLE = [
     "DRIVE_FOLDER_ID",
     "DRIVE_POLL_SECONDS",
     "LOG_RETENTION_DAYS",
+    "LIBBY_POLL_MINUTES",
+    "LIBBY_AUTO_BORROW",
     "UPLOAD_TOKEN",
 ]
 SECRETS = {"SMTP_PASSWORD", "UPLOAD_TOKEN"}
@@ -49,6 +51,8 @@ def current(cfg: Config) -> dict:
         "DRIVE_FOLDER_ID": cfg.drive_folder_id,
         "DRIVE_POLL_SECONDS": str(cfg.drive_poll_seconds),
         "LOG_RETENTION_DAYS": str(cfg.retention_days),
+        "LIBBY_POLL_MINUTES": str(cfg.libby_poll_minutes),
+        "LIBBY_AUTO_BORROW": "true" if cfg.libby_auto_borrow else "false",
     }
     return {
         "values": values,
@@ -58,6 +62,7 @@ def current(cfg: Config) -> dict:
         },
         "google_key": google_key_info(cfg),
         "adobe_activated": cfg.adobe_activated,
+        "libby_connected": cfg.libby_connected,
         "problems": cfg.problems(),
     }
 
@@ -93,6 +98,14 @@ def normalise(changes: dict) -> dict[str, str]:
     if "DRIVE_POLL_SECONDS" in clean:
         if not clean["DRIVE_POLL_SECONDS"].isdigit() or int(clean["DRIVE_POLL_SECONDS"]) < 15:
             errors.append("Drive check interval must be a number of seconds, at least 15")
+    if "LIBBY_POLL_MINUTES" in clean:
+        if not clean["LIBBY_POLL_MINUTES"].isdigit() or int(clean["LIBBY_POLL_MINUTES"]) < 15:
+            errors.append("Check Libby every 15 minutes or more (Libby limits how often it can be asked)")
+    if "LIBBY_AUTO_BORROW" in clean:
+        value = clean["LIBBY_AUTO_BORROW"].lower()
+        if value not in {"true", "false"}:
+            errors.append("Auto-borrow must be on or off")
+        clean["LIBBY_AUTO_BORROW"] = value
     if "LOG_RETENTION_DAYS" in clean:
         days = clean["LOG_RETENTION_DAYS"]
         if not days.isdigit() or not 1 <= int(days) <= MAX_RETENTION_DAYS:
