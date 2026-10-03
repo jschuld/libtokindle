@@ -39,7 +39,13 @@ HEADERS = {
     "Accept": "application/json",
     "Cache-Control": "no-cache",
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+    # The Libby web app sends this, and so does libby-archiver. Without it some calls
+    # (e.g. fetching a book) may be refused with 403 "whoa".
+    "Origin": "https://libbyapp.com",
 }
+# What each Libby call does, for error messages.
+STEPS = [("chip/sync", "checking your loans"), ("open/", "opening the book"), ("/fulfill/", "downloading the book"),
+         ("/loan/", "borrowing"), ("auth/", "signing in"), ("chip", "refreshing the session")]
 # Formats we can send, best first: DRM-free EPUB needs no DRM step at all.
 FORMATS = ["ebook-epub-open", "ebook-epub-adobe", "ebook-pdf-open", "ebook-pdf-adobe"]
 EXTENSIONS = {"ebook-epub-open": ".epub", "ebook-epub-adobe": ".acsm", "ebook-pdf-open": ".pdf", "ebook-pdf-adobe": ".acsm"}
@@ -59,7 +65,15 @@ class LibbyError(Exception):
 
 
 class LibbyRateLimited(LibbyError):
-    pass
+    """Libby asked us to slow down. `retry_after` is its hint in seconds, if it gave one."""
+
+    def __init__(self, message: str, retry_after: int | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def _step(endpoint: str) -> str:
+    return next((label for marker, label in STEPS if marker in endpoint), endpoint.split("/")[0])
 
 
 # --- Helpers for Libby's loan / hold / card objects
@@ -184,7 +198,15 @@ class LibbyClient:
             self._refresh()
             return self._request(method, endpoint, retry=False, raw=raw, **kwargs)
         if status == 429 or (status == 403 and "whoa" in (res.text or "")):
-            raise LibbyRateLimited("Libby is limiting requests for now. The service will try again later.")
+            headers_ = getattr(res, "headers", {}) or {}
+            retry_after = headers_.get("Retry-After")
+            retry_after = int(retry_after) if str(retry_after or "").isdigit() else None
+            # Log exactly what Libby said, to tell real throttling from a refused request.
+            log.warning("Libby refused %s %s with %s: %s (Retry-After: %s, Server: %s)", method,
+                        endpoint.split("?")[0], status, (res.text or "")[:300].replace("\n", " "),
+                        retry_after, headers_.get("Server"))
+            raise LibbyRateLimited(f"Libby is limiting requests for now (while {_step(endpoint)}). "
+                                   "The service will try again later.", retry_after)
         if status >= 400:
             where = endpoint.rsplit("/", 1)[-1] if endpoint.startswith("https://") else endpoint.split("/")[0]
             raise LibbyError(f"Libby said {status} for {where}: {_detail(res)}")
@@ -401,7 +423,17 @@ class LibbyWatcher:
                 _set_outcome(state, key, "not_ebook")
                 self._save_state(state)
                 continue
-            _set_outcome(state, key, self.send_loan(loan))
+            try:
+                outcome = self.send_loan(loan)
+            except LibbyRateLimited:
+                # Not a failure: forget we saw it, so the next check (after backing off) retries.
+                seen.discard(key)
+                state["seen"] = sorted(seen)
+                _set_outcome(state, key, "waiting")
+                self._save_state(state)
+                log.warning("Libby asked to wait before sending %s; it will be retried at the next check", describe(loan))
+                raise
+            _set_outcome(state, key, outcome)
             self._save_state(state)
 
     def _borrow_ready_holds(self, data: dict, state: dict) -> bool:
@@ -432,13 +464,18 @@ class LibbyWatcher:
         return borrowed
 
     def send_loan(self, loan: dict) -> str:
-        """Send one loan to the Kindle. Returns "sent" or "failed"."""
+        """Send one loan to the Kindle. Returns "sent" or "failed".
+
+        Raises LibbyRateLimited (before anything is recorded) if Libby asks us to wait,
+        so the caller can try the loan again later instead of failing it.
+        """
         name = describe(loan)
         fmt = best_format(loan)
         safe = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", loan.get("title") or name).strip(" .") or "book"
-        job = self.store.create(safe + (EXTENSIONS[fmt] if fmt else ""), source="libby")
+        filename = safe + (EXTENSIONS[fmt] if fmt else "")
         log.info("Sending Libby loan %s (%s)", name, fmt or "no downloadable format")
         if not fmt:
+            job = self.store.create(filename, source="libby")
             pipeline.fail(self.cfg, self.store, job,
                           f"“{name}” can only be read in the Libby app or a browser; "
                           "the library doesn't offer it as an EPUB or PDF download.")
@@ -446,14 +483,18 @@ class LibbyWatcher:
         try:
             try:
                 self.client.open_loan(loan)
-            except LibbyRateLimited:
-                raise
+            except LibbyRateLimited as exc:
+                log.warning("Opening loan %s was refused (continuing): %s", name, exc)
             except LibbyError as exc:
                 log.warning("Opening loan %s failed (continuing): %s", name, exc)
             data = self.client.fulfill(loan, fmt)
+        except LibbyRateLimited:
+            raise
         except LibbyError as exc:
+            job = self.store.create(filename, source="libby")
             pipeline.fail(self.cfg, self.store, job, f"Couldn't get “{name}” from Libby: {exc}")
             return "failed"
+        job = self.store.create(filename, source="libby")
         pipeline.process(self.cfg, self.store, job, data)
         return "sent" if job.status == "done" else "failed"
 
@@ -480,7 +521,7 @@ class LibbyWatcher:
                 "author": loan.get("firstCreatorName"),
                 "type": (loan.get("type") or {}).get("id"),
                 "sendable": is_ebook(loan) and best_format(loan) is not None,
-                "status": status,  # new | sending | sent | failed | skipped | not_ebook | earlier
+                "status": status,  # new | sending | waiting | sent | failed | skipped | not_ebook | earlier
                 "status_at": outcome.get("at"),
                 "expires": loan.get("expireDate"),
             })
@@ -491,14 +532,22 @@ class LibbyWatcher:
         if loan is None:
             raise LibbyError("That loan isn't in your Libby account any more. Refresh the page.")
         self._record(key, "sending")
-        self._record(key, self.send_loan(loan))
+        try:
+            self._record(key, self.send_loan(loan))
+        except LibbyRateLimited as exc:
+            # Queue it for the background check, which retries with backoff.
+            log.warning("Libby asked to wait before sending %s; it will be retried at the next check", describe(loan))
+            self._record(key, "waiting", seen=False)
+            self.last_error = str(exc)
 
-    def _record(self, key: str, status: str) -> None:
+    def _record(self, key: str, status: str, seen: bool = True) -> None:
         with self._lock:
             state = self._load_state() or {"seen": [], "hold_failures": []}
-            state["seen"] = sorted(set(state["seen"]) | {key})
+            keys = set(state["seen"])
+            state["seen"] = sorted(keys | {key} if seen else keys - {key})
             _set_outcome(state, key, status)
             self._save_state(state)
+
 
     def status(self) -> dict:
         cards = (self.last_sync or {}).get("cards", [])
@@ -537,6 +586,8 @@ class LibbyWatcher:
             except LibbyRateLimited as exc:
                 rate_limited += 1
                 wait = min(interval * 2 ** (rate_limited - 1), MAX_BACKOFF_SECONDS)
+                if exc.retry_after:  # Libby's own hint, if longer
+                    wait = max(wait, min(exc.retry_after, MAX_BACKOFF_SECONDS))
                 self.last_error = str(exc)
             except Exception as exc:
                 # Log a failure once, not every check while it lasts.

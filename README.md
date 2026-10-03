@@ -143,7 +143,9 @@ Libby has no official API. This uses the same one the Libby app uses, so it coul
 working if OverDrive changes it, and Libby limits how often it can be asked (checks are
 at most every 15 minutes). If Libby says it's getting too many requests, the service waits
 30 minutes, then an hour, then at most 2 hours between tries, and the main page shows when
-the next check is due. If the Libby check ever stops or hangs, it's restarted
+the next check is due. If Libby refuses a book download this way, the book isn't marked
+as failed: it shows "waiting" in **Your Libby loans** and is sent at the next check. If
+the Libby check ever stops or hangs, it's restarted
 automatically within 5 minutes; **Check now** also restarts it.
 
 ## Optional: watch a Google Drive folder

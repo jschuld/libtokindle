@@ -91,7 +91,9 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
 ## Libby facts
 
 - There's no official API. Base URL `https://sentry-read.svc.overdrive.com`, JSON, with the
-  header `Authorization: Bearer <identity>`.
+  header `Authorization: Bearer <identity>` and `Origin: https://libbyapp.com` (as the Libby
+  web app and libby-archiver send; added after the user's book downloads kept getting
+  403 "whoa" while the loan sync worked. Whether that header was the cause is unconfirmed).
   - **Linking uses the library card number + PIN** (the user's choice; this is how
     libby-archiver does it). The Libby "Copy To Another Device" setup-code flow does NOT
     work: the current Libby app makes the *new* device display a code for the phone to
@@ -129,6 +131,12 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
   - Rate limiting: `403 {"result": "whoa"}` or 429 → `LibbyRateLimited` → retry after the
     normal interval (30 min), then 1 h, then at most 2 h; back to normal after a success.
     Each rate limit logs "next check at HH:MM", and the status API/pages show `next_check`.
+    A `Retry-After` header, if sent, lengthens the wait. Every refusal logs
+    "Libby refused <METHOD> <path> with <status>: <body>" to tell throttling from a
+    refused request.
+  - A rate limit while **fetching a book** (open/fulfill) is not a failure: no job, no ❌
+    email. The loan's key is removed from `seen` with outcome `waiting`, so the next check
+    retries it. A refused `open` is only logged; the download is still attempted.
   - **Watchdog** (`main.restart_libby_if_stuck`, run every 5 min by the housekeeping thread
     and by "Check now"): if the watcher thread died, one check has run > 30 min, or a
     check is > 5 min overdue, it logs the reason plus the thread's stack and starts a new
@@ -171,7 +179,7 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
 
 ```sh
 pip install -r requirements-dev.txt
-python -m pytest -q            # currently 111 tests
+python -m pytest -q            # currently 116 tests
 UPLOAD_TOKEN=dev uvicorn app.main:app --reload
 ```
 

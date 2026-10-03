@@ -53,6 +53,9 @@ class FakeLibby:
         self.borrow_error = None
         self.open_epub = b""
         self.forms = [{"ilsName": "aucklandlibraries", "type": "Local"}]
+        self.whoa_on = None  # refuse only requests whose path contains this
+        self.whoa_headers = {}
+        self.headers_seen = []
 
     def _token(self, linked=False):
         self.tokens += 1
@@ -64,6 +67,7 @@ class FakeLibby:
     def request(self, method, url, headers=None, timeout=None, json=None, params=None, allow_redirects=True):
         path = url.replace(libby.API + "/", "")
         auth = (headers or {}).get("Authorization", "").removeprefix("Bearer ")
+        self.headers_seen.append((path, dict(headers or {})))
         self.calls.append((method, path, auth, json, params))
         if url.startswith("https://download.example/"):
             return Response(content=self.open_epub)
@@ -72,8 +76,8 @@ class FakeLibby:
             if key != "aucklandlibraries":
                 return Response(404, {"message": "not found"})
             return Response(body={"websiteId": 42, "preferredKey": "aucklandlibraries", "name": "Auckland Libraries"})
-        if self.rate_limited:
-            return Response(403, {"result": "whoa"})
+        if self.rate_limited or (self.whoa_on and self.whoa_on in path):
+            return Response(403, {"result": "whoa"}, headers=self.whoa_headers)
         if path == "chip" and method == "POST":
             assert params["c"] == "d:22.1.1"
             if auth:  # refreshing an existing chip keeps its card
@@ -573,3 +577,64 @@ def test_connect_endpoint_reports_network_error_instead_of_crashing(api, fake, m
     res = api.post("/api/libby/connect", headers=AUTH, json={"card_number": fake.card_number, "pin": fake.pin})
     assert res.status_code == 400
     assert "Couldn't reach Libby" in res.json()["detail"]
+
+
+
+# --- Rate limits while fetching a book (seen by the user: "Couldn't get “Neverseen” … limiting requests")
+
+def test_rate_limited_download_is_retried_not_failed(watcher, fake, sent, notices, caplog):
+    watcher.poll_once()
+    fake.loans = [ebook("9", "Neverseen", checkoutDate="d9")]
+    fake.whoa_on = "/fulfill/"
+    with pytest.raises(LibbyRateLimited, match="while downloading the book"):
+        watcher.poll_once()
+    assert sent == [] and notices == [] and watcher.store.recent() == []  # no ❌, no job
+    [loan] = watcher.loans()
+    assert loan["status"] == "waiting"
+    assert 'Libby refused GET card/111/loan/9/fulfill/ebook-epub-adobe with 403: {"result": "whoa"}' in caplog.text
+
+    fake.whoa_on = None
+    watcher.poll_once()  # the next check sends it
+    assert len(sent) == 1
+    assert watcher.loans()[0]["status"] == "sent"
+
+
+def test_refused_open_does_not_stop_the_download(watcher, fake, sent):
+    watcher.poll_once()
+    fake.loans = [ebook("9", "Neverseen", checkoutDate="d9")]
+    fake.whoa_on = "open/"
+    watcher.poll_once()
+    assert len(sent) == 1
+
+
+def test_manual_send_while_rate_limited_is_queued(watcher, fake, sent):
+    fake.loans = [ebook("1", "Had It", checkoutDate="old")]
+    watcher.poll_once()
+    [loan] = watcher.loans()
+    fake.whoa_on = "/fulfill/"
+    watcher.send_by_key(loan["key"])  # runs in the background: must not raise
+    assert watcher.loans()[0]["status"] == "waiting" and sent == []
+    fake.whoa_on = None
+    watcher.poll_once()
+    assert len(sent) == 1
+
+
+def test_libby_requests_send_origin_header(watcher, fake):
+    watcher.poll_once()
+    path, headers = fake.headers_seen[-1]
+    assert path == "chip/sync"
+    assert headers["Origin"] == "https://libbyapp.com"
+
+
+def test_retry_after_hint_is_respected(watcher, fake):
+    fake.rate_limited = True
+    fake.whoa_headers = {"Retry-After": "5400"}
+    waits = []
+
+    def fake_wait(seconds):
+        waits.append(seconds)
+        watcher._stop.set()
+
+    watcher._wake.wait = fake_wait
+    watcher.run()
+    assert waits == [5400]  # longer than the normal 30 minutes
