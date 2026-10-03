@@ -222,7 +222,7 @@ class LibbyClient:
         except requests.exceptions.SSLError as exc:
             if not (url.startswith(API + "/") and http is self.http and _is_hostname_mismatch(exc)):
                 raise LibbyError(f"Couldn't make a secure connection to Libby: {exc}") from None
-            log.warning("Libby's server presented a certificate for OverDrive's edge network instead of "
+            log.info("Libby's server presented a certificate for OverDrive's edge network instead of "
                         "%s; verifying it as %s", API.removeprefix("https://"), EDGE_CERT_NAME)
             self.api_http = self._edge_factory()
             try:

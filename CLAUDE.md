@@ -112,7 +112,8 @@ docker-compose.yml    port 8080→8000, ./config:/config, .env optional (needs C
     an OverDrive edge certificate for `*.odrsre.overdrive.com`, so requests fails with
     "Hostname mismatch". `LibbyClient._send` then switches Libby API calls to an
     `EdgeAdapter` session that still verifies the chain but checks the name
-    `sentry-read.odrsre.overdrive.com`. Any other TLS error is refused, never bypassed
+    `sentry-read.odrsre.overdrive.com` (logged once at INFO, since it happens on every
+    start for the user). Any other TLS error is refused, never bypassed
     (libby-archiver disables verification entirely; don't do that). Verified locally with
     test certificates (edge name accepted; other names and untrusted issuers refused).
   - Network and TLS failures are turned into `LibbyError` ("Couldn't reach Libby…"), so

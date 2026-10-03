@@ -539,7 +539,11 @@ class Failing:
 
 def test_edge_certificate_mismatch_falls_back_to_edge_session(lcfg, fake, caplog):
     """The exact error from the user's log: the edge session takes over for Libby's API."""
+    import logging
+
     import requests
+
+    caplog.set_level(logging.INFO, logger="app.libby")
 
     broken = Failing(requests.exceptions.SSLError(MISMATCH), fake)
     client = LibbyClient(lcfg.libby_file, http=broken)
@@ -548,7 +552,8 @@ def test_edge_certificate_mismatch_falls_back_to_edge_session(lcfg, fake, caplog
     client.connect(fake.card_number, fake.pin)
     assert broken.api_calls == 1 and edges == [1]  # detected once, then the edge session is used
     assert client.sync()["cards"]
-    assert caplog.text.count("OverDrive's edge network") == 1
+    [record] = [r for r in caplog.records if "OverDrive's edge network" in r.getMessage()]
+    assert record.levelname == "INFO"  # expected on the user's network; not a problem to flag
 
 
 def test_other_certificate_errors_are_not_bypassed(lcfg, fake):

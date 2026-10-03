@@ -136,7 +136,7 @@ the *new* device to show a code, which a server can't do.)
 
 On some networks OverDrive's server shows a certificate for its edge network
 (`*.odrsre.overdrive.com`) instead of its own name. The service recognises that case and
-still checks the certificate fully; you'll see one warning about it in the log. Any other
+still checks the certificate fully; you'll see one ordinary (not red) line about it in the log. Any other
 certificate problem is refused.
 
 Libby has no official API. This uses the same one the Libby app uses, so it could stop
